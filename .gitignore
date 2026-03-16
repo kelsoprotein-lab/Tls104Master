@@ -1,0 +1,37 @@
+# Build output
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.pdb
+
+# Visual Studio
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+CMakeSettings.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependencies
+_deps/
+lib60870-src/
+conanbuild/
+CMakeFiles/
+
+# Go (如果用到)
+*.exe
+vendor/
+go.sum
+
+# OS
+.DS_Store
+Thumbs.db

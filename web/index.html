@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TLS104 Master - Windows Desktop</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <style>
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        #app { padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .station-card { margin-bottom: 16px; }
+        .station-header { display: flex; justify-content: space-between; align-items: center; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+        .status-connected { background: #67c23a; }
+        .status-disconnected { background: #909399; }
+        .status-connecting { background: #e6a23c; }
+        .status-error { background: #f56c6c; }
+        .data-table { margin-top: 16px; }
+        .packet-monitor { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+        .packet-sent { color: #4ec9b0; }
+        .packet-received { color: #ce9178; }
+        .highlight { animation: highlight 3s ease-out; }
+        @keyframes highlight {
+            0% { background: #fdf6ec; }
+            100% { background: transparent; }
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="header">
+            <h1>IEC 104 Master - Desktop</h1>
+            <el-button type="primary" @click="showAddDialog = true">添加从站</el-button>
+        </div>
+
+        <!-- 从站列表 -->
+        <el-row :gutter="16">
+            <el-col :span="8" v-for="station in stations" :key="station.station_id">
+                <el-card class="station-card">
+                    <template #header>
+                        <div class="station-header">
+                            <span>
+                                <span class="status-dot" :class="'status-' + station.status"></span>
+                                {{ station.station_id }}
+                            </span>
+                            <el-button size="small" type="danger" @click="removeStation(station.station_id)">删除</el-button>
+                        </div>
+                    </template>
+                    <p>地址: {{ station.host }}:{{ station.port }}</p>
+                    <p>状态: {{ station.status }}</p>
+                    <div style="margin-top: 12px;">
+                        <el-button size="small" type="primary" @click="sendInterrogation(station.station_id)">总召唤</el-button>
+                        <el-button size="small" @click="sendClockSync(station.station_id)">时钟同步</el-button>
+                    </div>
+                </el-card>
+            </el-col>
+        </el-row>
+
+        <div v-if="stations.length === 0" style="text-align: center; padding: 40px; color: #909399;">
+            暂无从站，请点击"添加从站"按钮添加
+        </div>
+
+        <!-- 报文监控 -->
+        <el-card style="margin-top: 20px;">
+            <template #header>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>报文监控</span>
+                    <el-button size="small" type="danger" @click="clearPackets">清空</el-button>
+                </div>
+            </template>
+            <div class="packet-monitor" id="packetMonitor">
+                <div v-for="(packet, index) in packets" :key="index">
+                    <span :class="packet.sent ? 'packet-sent' : 'packet-received'">
+                        {{ packet.sent ? '→' : '←' }}
+                    </span>
+                    {{ packet.data }}
+                </div>
+            </div>
+        </el-card>
+
+        <!-- 添加从站对话框 -->
+        <el-dialog v-model="showAddDialog" title="添加从站" width="500px">
+            <el-form :model="newStation" label-width="100px">
+                <el-form-item label="主机地址">
+                    <el-input v-model="newStation.host" placeholder="192.168.1.100"></el-input>
+                </el-form-item>
+                <el-form-item label="端口">
+                    <el-input-number v-model="newStation.port" :min="1" :max="65535"></el-input-number>
+                </el-form-item>
+                <el-form-item label="TLS">
+                    <el-switch v-model="newStation.use_tls"></el-switch>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="showAddDialog = false">取消</el-button>
+                <el-button type="primary" @click="addStation">确定</el-button>
+            </template>
+        </el-dialog>
+    </div>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus"></script>
+    <script>
+        const { createApp, ref } = Vue;
+
+        const app = createApp({
+            setup() {
+                const stations = ref([]);
+                const packets = ref([]);
+                const showAddDialog = ref(false);
+                const newStation = ref({
+                    host: '127.0.0.1',
+                    port: 2404,
+                    use_tls: false
+                });
+
+                // C++ IPC bridge
+                const sendToCpp = (type, data) => {
+                    const msg = JSON.stringify({ type, data });
+                    if (window.chrome && window.chrome.webview) {
+                        window.chrome.webview.postMessage(msg);
+                    } else {
+                        console.log('[JS] Would send:', msg);
+                    }
+                };
+
+                const addStation = () => {
+                    stations.value.push({
+                        station_id: `${newStation.value.host}:${newStation.value.port}`,
+                        host: newStation.value.host,
+                        port: newStation.value.port,
+                        status: 'connecting'
+                    });
+                    sendToCpp('add_station', newStation.value);
+                    showAddDialog.value = false;
+                };
+
+                const removeStation = (id) => {
+                    stations.value = stations.value.filter(s => s.station_id !== id);
+                    sendToCpp('remove_station', { station_id: id });
+                };
+
+                const sendInterrogation = (id) => {
+                    sendToCpp('interrogation', { station_id: id });
+                };
+
+                const sendClockSync = (id) => {
+                    sendToCpp('clock_sync', { station_id: id });
+                };
+
+                const clearPackets = () => {
+                    packets.value = [];
+                };
+
+                // Listen for messages from C++
+                if (window.chrome && window.chrome.webview) {
+                    window.chrome.webview.addEventListener('message', (event) => {
+                        const msg = JSON.parse(event.data);
+                        console.log('[JS] Received:', msg);
+
+                        if (msg.type === 'connection') {
+                            const station = stations.value.find(s => s.station_id === msg.station_id);
+                            if (station) {
+                                station.status = msg.data.status;
+                            }
+                        } else if (msg.type === 'packet') {
+                            packets.value.push(msg.data);
+                            if (packets.value.length > 500) packets.value.shift();
+                        }
+                    });
+                }
+
+                return {
+                    stations,
+                    packets,
+                    showAddDialog,
+                    newStation,
+                    addStation,
+                    removeStation,
+                    sendInterrogation,
+                    sendClockSync,
+                    clearPackets
+                };
+            }
+        });
+
+        app.use(ElementPlus);
+        app.mount('#app');
+    </script>
+</body>
+</html>
