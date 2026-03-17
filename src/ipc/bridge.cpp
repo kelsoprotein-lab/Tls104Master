@@ -121,9 +121,40 @@ void IPCBridge::handleMessage(const std::string& json) {
         size_t tlsPos = dataStr.find("\"use_tls\"");
         if (tlsPos != std::string::npos) {
             size_t tCol = dataStr.find(":", tlsPos);
-            std::string tVal = dataStr.substr(tCol + 1, dataStr.find_first_of(",}", tCol) - tCol - 1);
+            std::string tVal = trim(dataStr.substr(tCol + 1, dataStr.find_first_of(",}", tCol) - tCol - 1));
             config.useTLS = (tVal == "true");
         }
+        // Parse ca_file
+        size_t caPos = dataStr.find("\"ca_file\"");
+        if (caPos != std::string::npos) {
+            size_t cCol = dataStr.find(":", caPos);
+            size_t cQ1 = dataStr.find("\"", cCol);
+            size_t cQ2 = dataStr.find("\"", cQ1 + 1);
+            config.caFile = dataStr.substr(cQ1 + 1, cQ2 - cQ1 - 1);
+        }
+        // Parse cert_file
+        size_t certPos = dataStr.find("\"cert_file\"");
+        if (certPos != std::string::npos) {
+            size_t cCol = dataStr.find(":", certPos);
+            size_t cQ1 = dataStr.find("\"", cCol);
+            size_t cQ2 = dataStr.find("\"", cQ1 + 1);
+            config.certFile = dataStr.substr(cQ1 + 1, cQ2 - cQ1 - 1);
+        }
+        // Parse key_file
+        size_t keyPos = dataStr.find("\"key_file\"");
+        if (keyPos != std::string::npos) {
+            size_t cCol = dataStr.find(":", keyPos);
+            size_t cQ1 = dataStr.find("\"", cCol);
+            size_t cQ2 = dataStr.find("\"", cQ1 + 1);
+            config.keyFile = dataStr.substr(cQ1 + 1, cQ2 - cQ1 - 1);
+        }
+        // Debug output
+        std::cout << "[IPC Bridge] Parsed - host: " << config.host
+                  << ", port: " << config.port
+                  << ", useTLS: " << config.useTLS
+                  << ", caFile: '" << config.caFile << "'"
+                  << ", certFile: '" << config.certFile << "'"
+                  << ", keyFile: '" << config.keyFile << "'" << std::endl;
         // Generate ID
         config.id = config.host + ":" + std::to_string(config.port);
 

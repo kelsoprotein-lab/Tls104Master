@@ -169,7 +169,45 @@ std::string handleAPIRequest(const std::string& path, const std::string& method,
         if (tlsPos != std::string::npos) {
             size_t colon = body.find(":", tlsPos);
             std::string tlsStr = body.substr(colon + 1, body.find_first_of(",}", colon) - colon - 1);
+            tlsStr.erase(0, tlsStr.find_first_not_of(" \t\r\n"));
+            tlsStr.erase(tlsStr.find_last_not_of(" \t\r\n") + 1);
             use_tls = (tlsStr == "true");
+        }
+
+        // Extract ca_file
+        std::string ca_file;
+        size_t caFilePos = body.find("\"ca_file\"");
+        if (caFilePos != std::string::npos) {
+            size_t colon = body.find(":", caFilePos);
+            size_t q1 = body.find("\"", colon);
+            size_t q2 = body.find("\"", q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos) {
+                ca_file = body.substr(q1 + 1, q2 - q1 - 1);
+            }
+        }
+
+        // Extract cert_file
+        std::string cert_file;
+        size_t certFilePos = body.find("\"cert_file\"");
+        if (certFilePos != std::string::npos) {
+            size_t colon = body.find(":", certFilePos);
+            size_t q1 = body.find("\"", colon);
+            size_t q2 = body.find("\"", q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos) {
+                cert_file = body.substr(q1 + 1, q2 - q1 - 1);
+            }
+        }
+
+        // Extract key_file
+        std::string key_file;
+        size_t keyFilePos = body.find("\"key_file\"");
+        if (keyFilePos != std::string::npos) {
+            size_t colon = body.find(":", keyFilePos);
+            size_t q1 = body.find("\"", colon);
+            size_t q2 = body.find("\"", q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos) {
+                key_file = body.substr(q1 + 1, q2 - q1 - 1);
+            }
         }
 
         // Create station config
@@ -178,6 +216,9 @@ std::string handleAPIRequest(const std::string& path, const std::string& method,
         config.host = host;
         config.port = port;
         config.useTLS = use_tls;
+        config.caFile = ca_file;
+        config.certFile = cert_file;
+        config.keyFile = key_file;
 
         // Notify callback
         if (g_appCallback) {
@@ -246,6 +287,89 @@ std::string handleAPIRequest(const std::string& path, const std::string& method,
 
         if (g_appCallback) {
             g_appCallback->onSendCounterRead(stationId, 1);
+        }
+
+        std::string json = "{\"code\":0,\"message\":\"ok\"}";
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Type: application/json\r\n"
+               "Content-Length: " + std::to_string(json.size()) + "\r\n"
+               "Access-Control-Allow-Origin: *\r\n"
+               "\r\n" + json;
+    }
+
+    // POST /api/stations/:id/control
+    if (method == "POST" && path.find("/api/stations/") == 0 && path.find("/control") != std::string::npos) {
+        std::string stationId = path.substr(14, path.find("/", 14) - 14);
+
+        std::cout << "[API] Control request for station: " << stationId << std::endl;
+        std::cout << "[API] Request body: " << body << std::endl;
+
+        // Parse control command from JSON body
+        tls104::ControlCommand cmd;
+        cmd.ioa = 0;
+        cmd.ca = 1;
+        cmd.value = 0;
+        cmd.type = "single";
+        cmd.select = false;
+
+        // Extract ioa
+        size_t ioaPos = body.find("\"ioa\"");
+        if (ioaPos != std::string::npos) {
+            size_t colon = body.find(":", ioaPos);
+            std::string ioaStr = body.substr(colon + 1, body.find_first_of(",}", colon) - colon - 1);
+            // Trim whitespace
+            ioaStr.erase(0, ioaStr.find_first_not_of(" \t"));
+            ioaStr.erase(ioaStr.find_last_not_of(" \t") + 1);
+            cmd.ioa = std::stoi(ioaStr);
+        }
+
+        // Extract ca
+        size_t caPos = body.find("\"ca\"");
+        if (caPos != std::string::npos) {
+            size_t colon = body.find(":", caPos);
+            std::string caStr = body.substr(colon + 1, body.find_first_of(",}", colon) - colon - 1);
+            caStr.erase(0, caStr.find_first_not_of(" \t"));
+            caStr.erase(caStr.find_last_not_of(" \t") + 1);
+            cmd.ca = std::stoi(caStr);
+        }
+
+        // Extract type
+        size_t typePos = body.find("\"type\"");
+        if (typePos != std::string::npos) {
+            size_t colon = body.find(":", typePos);
+            size_t quote1 = body.find("\"", colon);
+            size_t quote2 = body.find("\"", quote1 + 1);
+            if (quote1 != std::string::npos && quote2 != std::string::npos) {
+                cmd.type = body.substr(quote1 + 1, quote2 - quote1 - 1);
+            }
+        }
+
+        // Extract value
+        size_t valuePos = body.find("\"value\"");
+        if (valuePos != std::string::npos) {
+            size_t colon = body.find(":", valuePos);
+            std::string valueStr = body.substr(colon + 1, body.find_first_of(",}", colon) - colon - 1);
+            valueStr.erase(0, valueStr.find_first_not_of(" \t"));
+            valueStr.erase(valueStr.find_last_not_of(" \t") + 1);
+            cmd.value = std::stoi(valueStr);
+        }
+
+        // Extract select
+        size_t selectPos = body.find("\"select\"");
+        if (selectPos != std::string::npos) {
+            size_t colon = body.find(":", selectPos);
+            std::string selectStr = body.substr(colon + 1, body.find_first_of(",}", colon) - colon - 1);
+            selectStr.erase(0, selectStr.find_first_not_of(" \t"));
+            selectStr.erase(selectStr.find_last_not_of(" \t") + 1);
+            cmd.select = (selectStr == "true");
+        }
+
+        std::cout << "[API] Parsed control: IOA=" << cmd.ioa << " CA=" << cmd.ca
+                  << " type=" << cmd.type << " value=" << cmd.value
+                  << " select=" << (cmd.select ? "true" : "false") << std::endl;
+
+        if (g_appCallback) {
+            g_appCallback->onSendControl(stationId, cmd);
         }
 
         std::string json = "{\"code\":0,\"message\":\"ok\"}";
@@ -356,6 +480,31 @@ int main(int argc, char* argv[]) {
                  << ",\"quality\":" << p.quality << "}]}}";
             g_httpServer->broadcast(json.str());
         }
+    });
+
+    // Set up control result callback
+    g_iec104->setControlResultCallback([](const std::string& stationId,
+                                           uint32_t ioa,
+                                           const std::string& type,
+                                           bool success,
+                                           const std::string& message) {
+        std::cout << "[Main] Broadcasting control result: IOA=" << ioa
+                  << " success=" << (success ? "true" : "false")
+                  << " message=" << message << std::endl;
+
+        if (!g_httpServer) {
+            std::cerr << "[Main] g_httpServer is null!" << std::endl;
+            return;
+        }
+
+        std::ostringstream json;
+        json << "{\"type\":\"control_result\",\"station_id\":\"" << stationId << "\","
+             << "\"data\":{\"ioa\":" << ioa
+             << ",\"type\":\"" << type << "\""
+             << ",\"success\":" << (success ? "true" : "false")
+             << ",\"message\":\"" << message << "\"}}";
+        g_httpServer->broadcast(json.str());
+        std::cout << "[Main] Broadcast sent: " << json.str() << std::endl;
     });
 
     // Start HTTP server

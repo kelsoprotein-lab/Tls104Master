@@ -41,6 +41,7 @@ enum class ConnectionStatus {
  */
 struct IEC104ConnectionInfo {
     CS104_Connection connection;
+    TLSConfiguration tlsConfig;
     std::string stationId;
     std::string host;
     int port;
@@ -57,7 +58,7 @@ struct IEC104ConnectionInfo {
     void* holder;  // Pointer to IEC104ConnectionManager
 
     IEC104ConnectionInfo()
-        : connection(nullptr), port(2404), useTLS(false), commonAddress(1),
+        : connection(nullptr), tlsConfig(nullptr), port(2404), useTLS(false), commonAddress(1),
           status(ConnectionStatus::DISCONNECTED), shouldReconnect(true),
           reconnectThreadRunning(false), holder(nullptr) {}
 };
@@ -141,6 +142,15 @@ public:
         const std::vector<ProtectionEventData>& protection
     )>;
 
+    // Control result callback
+    using ControlResultCallback = std::function<void(
+        const std::string& stationId,
+        uint32_t ioa,
+        const std::string& type,
+        bool success,
+        const std::string& message
+    )>;
+
     IEC104ConnectionManager();
     ~IEC104ConnectionManager();
 
@@ -159,6 +169,7 @@ public:
     void setDataCallback(DataCallback cb);
     void setASDUDataCallback(ASDUDataCallback cb);
     void setPacketCallback(PacketCallback cb);
+    void setControlResultCallback(ControlResultCallback cb);
 
     // IPCBridgeCallback implementation
     void onAddStation(const StationConfig& config) override;
@@ -169,7 +180,7 @@ public:
     void onSendControl(const std::string& stationId, const ControlCommand& cmd) override;
 
 private:
-    CS104_Connection createConnection(const IEC104ConnectionInfo& info);
+    CS104_Connection createConnection(IEC104ConnectionInfo& info);
     void connectThreadFunc(const std::string& stationId, IEC104ConnectionInfo* info);
     void reconnectThreadFunc(const std::string& stationId, IEC104ConnectionInfo* info);
 
@@ -189,6 +200,7 @@ private:
     DataCallback dataCallback_;
     ASDUDataCallback asduDataCallback_;
     PacketCallback packetCallback_;
+    ControlResultCallback controlResultCallback_;
 
     // Temporary storage for parsed data
     std::vector<DigitalPointData> tempDigital_;

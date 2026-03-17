@@ -118,7 +118,7 @@
                             <el-button size="small" type="primary" @click="sendInterrogation(stationId)">总召唤</el-button>
                         </div>
                     </template>
-                    <el-table :data="pointsByStation[stationId]" height="250" style="width: 100%" :row-class-name="getRowClassName">
+                    <el-table :data="getPagedPoints(stationId, pointsByStation[stationId])" height="250" style="width: 100%" :row-class-name="getRowClassName">
                         <el-table-column prop="ioa" label="IOA" width="100" sortable></el-table-column>
                         <el-table-column prop="type" label="类型" width="200" sortable>
                             <template #default="scope">
@@ -157,8 +157,19 @@
                             </template>
                         </el-table-column>
                     </el-table>
-                    <div style="margin-top: 8px; color: #909399; font-size: 12px;">
-                        共 {{ pointsByStation[stationId]?.length || 0 }} 个点位
+                    <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: #909399; font-size: 12px;">
+                            共 {{ pointsByStation[stationId]?.length || 0 }} 个点位
+                        </span>
+                        <el-pagination
+                            v-if="(pointsByStation[stationId]?.length || 0) > STATION_PAGE_SIZE"
+                            small
+                            layout="prev, pager, next"
+                            :current-page="getStationPage(stationId)"
+                            :page-size="STATION_PAGE_SIZE"
+                            :total="pointsByStation[stationId]?.length || 0"
+                            @current-change="(page) => handleStationPageChange(stationId, page)"
+                        />
                     </div>
                 </el-card>
             </div>
@@ -211,10 +222,10 @@
                     <el-switch v-model="newStation.use_tls"></el-switch>
                 </el-form-item>
                 <el-form-item label="CA证书" v-if="newStation.use_tls">
-                    <el-input v-model="newStation.ca_file" placeholder="/path/to/ca.crt"></el-input>
+                    <el-input v-model="newStation.ca_file" placeholder="E:/OneDrive/桌面/cert_demo/ca/ca-cert.pem"></el-input>
                 </el-form-item>
                 <el-form-item label="客户端证书" v-if="newStation.use_tls">
-                    <el-input v-model="newStation.cert_file" placeholder="/path/to/client.crt"></el-input>
+                    <el-input v-model="newStation.cert_file" placeholder="E:/OneDrive/桌面/cert_demo/master/master-key.pem"></el-input>
                 </el-form-item>
                 <el-form-item label="客户端密钥" v-if="newStation.use_tls">
                     <el-input v-model="newStation.key_file" placeholder="/path/to/client.key"></el-input>
@@ -301,8 +312,10 @@
 
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/element-plus"></script>
+    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
     <script>
-        const { createApp, ref, shallowRef, computed, watch, onMounted, nextTick } = Vue;
+        const { createApp, ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick, getCurrentInstance } = Vue;
+        const { ElMessage, ElMessageBox } = ElementPlus;
 
         // IEC 60870-5-104 类型映射（与 IEC104Type.h 保持一致）
         const typeNames = {
@@ -358,12 +371,21 @@
         // 遥信类型列表
         const digitalTypes = ['M_SP_NA_1', 'M_DP_NA_1', 'M_SP_TB_1', 'M_DP_TB_1'];
 
+        // 点位数量限制常量
+        const MAX_POINTS = 5000; // 最大保留点位数
+        const POINTS_CLEANUP_THRESHOLD = 5500; // 触发清理的阈值
+
         const app = createApp({
             setup() {
                 const stations = ref([]);
                 const pointsMap = shallowRef({});  // 使用 shallowRef 存储点位，key 为 station_id + ioa
                 const packets = ref([]);
                 const packetCache = ref([]);  // 缓存折叠时的报文
+
+                // 批量更新队列
+                const pendingUpdates = [];
+                let updateScheduled = false;
+                let updateRafId = null;
 
                 // 报文监控是否展开
                 const isPacketMonitorOpen = computed(() => {
@@ -402,6 +424,32 @@
                 const filterQuality = ref('');
                 const searchDebounceTimer = ref(null);
 
+                // 每个子站的分页状态 { stationId: pageNumber }
+                const stationPageMap = ref({});
+                const STATION_PAGE_SIZE = 50;
+
+                // 获取子站当前页码
+                function getStationPage(stationId) {
+                    return stationPageMap.value[stationId] || 1;
+                }
+
+                // 设置子站页码
+                function setStationPage(stationId, page) {
+                    stationPageMap.value[stationId] = page;
+                }
+
+                // 获取分页后的点位数据
+                function getPagedPoints(stationId, points) {
+                    const page = getStationPage(stationId);
+                    const start = (page - 1) * STATION_PAGE_SIZE;
+                    return points.slice(start, start + STATION_PAGE_SIZE);
+                }
+
+                // 处理子站页码变化
+                function handleStationPageChange(stationId, page) {
+                    setStationPage(stationId, page);
+                }
+
                 // 从站搜索防抖
                 const stationSearchDebounceTimer = ref(null);
                 function handleStationSearch(value) {
@@ -417,11 +465,13 @@
                     searchDebounceTimer.value = setTimeout(() => {
                         searchText.value = value;
                         currentPage.value = 1;  // 搜索时重置到第一页
+                        stationPageMap.value = {};  // 重置所有子站的分页到第一页
                     }, 300);
                 }
 
-                // 高亮行 ID 映射（Map 优化：O(1) 查找）
-                const highlightMap = ref(new Map());
+                // 高亮系统优化：使用单个定时器管理所有高亮
+                const highlightExpiry = ref(new Map()); // id -> expiryTime
+                let highlightTimer = null;
 
                 // 生成唯一 ID
                 function makePointId(ioa, type) {
@@ -430,17 +480,107 @@
 
                 // 添加高亮
                 function addHighlight(id) {
-                    if (!highlightMap.value.has(id)) {
-                        highlightMap.value.set(id, true);
-                        setTimeout(() => {
-                            highlightMap.value.delete(id);
-                        }, 3000);
+                    highlightExpiry.value.set(id, Date.now() + 3000);
+                    if (!highlightTimer) {
+                        highlightTimer = setInterval(cleanupHighlights, 1000);
                     }
                 }
 
                 // 检查是否高亮
                 function isHighlighted(id) {
-                    return highlightMap.value.has(id);
+                    return highlightExpiry.value.has(id);
+                }
+
+                // 清理过期的高亮
+                function cleanupHighlights() {
+                    const now = Date.now();
+                    const expired = [];
+                    for (const [id, expiry] of highlightExpiry.value) {
+                        if (now > expiry) {
+                            expired.push(id);
+                        }
+                    }
+                    if (expired.length > 0) {
+                        expired.forEach(id => highlightExpiry.value.delete(id));
+                    }
+                    if (highlightExpiry.value.size === 0 && highlightTimer) {
+                        clearInterval(highlightTimer);
+                        highlightTimer = null;
+                    }
+                }
+
+                // LRU清理旧点位
+                function cleanupOldPoints() {
+                    const keys = Object.keys(pointsMap.value);
+                    if (keys.length > POINTS_CLEANUP_THRESHOLD) {
+                        // 按时间戳排序，删除最旧的
+                        const entries = keys.map(k => ({
+                            key: k,
+                            timestamp: pointsMap.value[k].timestamp ? new Date(pointsMap.value[k].timestamp).getTime() : 0
+                        }));
+                        entries.sort((a, b) => b.timestamp - a.timestamp);
+                        const toDelete = entries.slice(MAX_POINTS);
+
+                        const newMap = { ...pointsMap.value };
+                        toDelete.forEach(({ key }) => {
+                            delete newMap[key];
+                            // 同时清理高亮状态
+                            highlightExpiry.value.delete(key);
+                        });
+                        pointsMap.value = newMap;
+                        console.log(`[JS] Cleaned up ${toDelete.length} old points`);
+                    }
+                }
+
+                // 批量更新调度
+                function scheduleUpdate() {
+                    if (updateScheduled) return;
+                    updateScheduled = true;
+                    updateRafId = requestAnimationFrame(() => {
+                        processBatchUpdates();
+                        updateScheduled = false;
+                        updateRafId = null;
+                    });
+                }
+
+                function processBatchUpdates() {
+                    if (pendingUpdates.length === 0) return;
+
+                    const updates = pendingUpdates.splice(0);
+                    let hasNewPoint = false;
+                    const currentMap = pointsMap.value;
+
+                    updates.forEach(msg => {
+                        switch (msg.type) {
+                            case 'telemetry':
+                            case 'digital':
+                                msg.data.objects.forEach(obj => {
+                                    obj.timestamp = new Date().toLocaleString();
+                                    obj.station_id = msg.station_id;
+                                    const key = msg.station_id + '_' + obj.ioa.toString();
+                                    if (key in currentMap) {
+                                        const point = currentMap[key];
+                                        if (point.value !== obj.value) {
+                                            addHighlight(key);
+                                        }
+                                        point.value = obj.value;
+                                        point.type = obj.type;
+                                        point.quality = obj.quality;
+                                        point.timestamp = obj.timestamp;
+                                    } else {
+                                        currentMap[key] = { ...obj, id: key };
+                                        hasNewPoint = true;
+                                    }
+                                });
+                                break;
+                        }
+                    });
+
+                    // 触发响应式更新（仅在有新点位时需要重建引用）
+                    if (hasNewPoint) {
+                        pointsMap.value = { ...currentMap };
+                        cleanupOldPoints();
+                    }
                 }
 
                 // 按功能码分组的遥测数据
@@ -583,13 +723,13 @@
 
                 const showAddDialog = ref(false);
                 const newStation = ref({
-                    host: '127.0.0.1',
+                    host: '10.15.48.245',
                     port: 2404,
                     ca: 1,
                     use_tls: false,
-                    ca_file: '',
-                    cert_file: '',
-                    key_file: ''
+                    ca_file: 'F:/cert_demo/ca/ca-cert.pem',
+                    cert_file: 'F:/cert_demo/master/master-cert.pem',
+                    key_file: 'F:/cert_demo/master/master-key.pem'
                 });
 
                 // 控制相关变量
@@ -653,9 +793,13 @@
                         select: controlForm.value.select
                     });
 
-                    ElMessage.success('控制命令已发送');
+                    // Don't show message now - wait for result
+                    // 结果会在 control_result 消息中显示
                     showControlDialog.value = false;
                 }
+
+                // SSE 连接引用，用于清理
+                let eventSource = null;
 
                 // Connect to C++ via WebView2
                 function connectToCpp() {
@@ -672,7 +816,7 @@
                     } else {
                         console.log('[JS] Running in browser mode (not WebView2), connecting to SSE...');
                         // Connect to SSE for real-time updates
-                        const eventSource = new EventSource('/events');
+                        eventSource = new EventSource('/events');
                         eventSource.onopen = () => {
                             console.log('[JS] SSE connected');
                         };
@@ -693,59 +837,42 @@
                 }
 
                 function handleMessage(msg) {
-                    let needsRefresh = false;
+                    // 使用批量更新队列处理遥测和遥信数据
+                    if (msg.type === 'telemetry' || msg.type === 'digital') {
+                        pendingUpdates.push(msg);
+                        scheduleUpdate();
+                        return;
+                    }
+
                     switch (msg.type) {
-                        case 'telemetry':
-                            msg.data.objects.forEach(obj => {
-                                obj.timestamp = new Date().toLocaleString();
-                                obj.station_id = msg.station_id;  // 添加 station_id
-                                const key = msg.station_id + '_' + obj.ioa.toString();  // 使用 station_id + ioa 作为 key
-                                if (key in pointsMap.value) {
-                                    const point = pointsMap.value[key];
-                                    // 值变化时添加高亮
-                                    if (point.value !== obj.value) {
-                                        addHighlight(key);
-                                    }
-                                    point.value = obj.value;
-                                    point.type = obj.type;
-                                    point.quality = obj.quality;
-                                    point.timestamp = obj.timestamp;
-                                } else {
-                                    pointsMap.value[key] = {...obj, id: key};
-                                    needsRefresh = true;
-                                }
-                            });
-                            break;
-                        case 'digital':
-                            msg.data.objects.forEach(obj => {
-                                obj.timestamp = new Date().toLocaleString();
-                                obj.station_id = msg.station_id;  // 添加 station_id
-                                const key = msg.station_id + '_' + obj.ioa.toString();  // 使用 station_id + ioa 作为 key
-                                if (key in pointsMap.value) {
-                                    const point = pointsMap.value[key];
-                                    // 值变化时添加高亮
-                                    if (point.value !== obj.value) {
-                                        addHighlight(key);
-                                    }
-                                    point.value = obj.value;
-                                    point.type = obj.type;
-                                    point.quality = obj.quality;
-                                    point.timestamp = obj.timestamp;
-                                } else {
-                                    pointsMap.value[key] = {...obj, id: key};
-                                    needsRefresh = true;
-                                }
-                            });
-                            break;
                         case 'connection':
                             console.log('[JS] Connection update:', msg.station_id, msg.data);
-                            const station = stations.value.find(s => s.station_id === msg.station_id);
-                            if (station) {
-                                station.status = msg.data.status;
+                            const idx = stations.value.findIndex(s => s.station_id === msg.station_id);
+                            if (idx !== -1) {
+                                // 创建新对象替换，触发 Vue 响应式更新
+                                stations.value[idx] = {
+                                    ...stations.value[idx],
+                                    status: msg.data.status
+                                };
                                 console.log('[JS] Station status updated to:', msg.data.status);
                             } else {
                                 console.log('[JS] Station not found in list:', msg.station_id);
                             }
+                            break;
+                        case 'control_result':
+                            console.log('[JS] Control result:', msg.station_id, msg.data);
+                            if (msg.data.success) {
+                                ElMessage.success({
+                                    message: `遥控执行成功！ (IOA=${msg.data.ioa})`,
+                                    duration: 3000
+                                });
+                            } else {
+                                ElMessage.error({
+                                    message: `遥控执行失败: ${msg.data.message} (IOA=${msg.data.ioa})`,
+                                    duration: 5000
+                                });
+                            }
+                            console.log('[JS] Control result received:', msg.data);
                             break;
                         case 'packet':
                             // 折叠时不处理DOM，只缓存
@@ -769,10 +896,6 @@
                             }
                             break;
                     }
-                    // 触发响应式更新
-                    if (needsRefresh) {
-                        pointsMap.value = {...pointsMap.value};
-                    }
                 }
 
                 // Send message to C++ via WebView2 or HTTP API
@@ -791,7 +914,10 @@
                                     body: JSON.stringify({
                                         host: data.host,
                                         port: data.port,
-                                        use_tls: data.use_tls || false
+                                        use_tls: data.use_tls || false,
+                                        ca_file: data.ca_file || '',
+                                        cert_file: data.cert_file || '',
+                                        key_file: data.key_file || ''
                                     })
                                 });
                                 const result = await response.json();
@@ -898,6 +1024,25 @@
                     connectToCpp();
                 });
 
+                onUnmounted(() => {
+                    // 清除所有定时器
+                    if (searchDebounceTimer.value) clearTimeout(searchDebounceTimer.value);
+                    if (stationSearchDebounceTimer.value) clearTimeout(stationSearchDebounceTimer.value);
+                    if (highlightTimer) clearInterval(highlightTimer);
+
+                    // 取消待处理的动画帧
+                    if (updateRafId) cancelAnimationFrame(updateRafId);
+
+                    // 关闭 SSE 连接
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+
+                    // 清空待处理更新队列
+                    pendingUpdates.length = 0;
+                });
+
                 return {
                     stations,
                     filteredStations,
@@ -944,7 +1089,11 @@
                     sendInterrogation,
                     sendCounterInterrogation,
                     sendClockSync,
-                    clearPackets
+                    clearPackets,
+                    STATION_PAGE_SIZE,
+                    getStationPage,
+                    getPagedPoints,
+                    handleStationPageChange
                 };
             }
         });

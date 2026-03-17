@@ -8,11 +8,15 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <cstring>
 
 // Thread-safe station ID storage for callbacks
 static thread_local std::string g_currentStationId;
 
 namespace tls104 {
+
+// Forward declaration for raw message handler
+static void rawMessageHandler(void* param, uint8_t* msg, int msgSize, bool sent);
 
 // Helper function to extract timestamp from CP56Time2a (7-byte time)
 // Returns milliseconds since epoch
@@ -133,6 +137,11 @@ bool IEC104ConnectionManager::removeStation(const std::string& stationId) {
             CS104_Connection_destroy(info->connection);
             info->connection = nullptr;
         }
+
+        if (info->tlsConfig) {
+            TLSConfiguration_destroy(info->tlsConfig);
+            info->tlsConfig = nullptr;
+        }
     }
 
     connections_.erase(it);
@@ -156,6 +165,7 @@ void IEC104ConnectionManager::connectThreadFunc(const std::string& stationId, IE
     // Set handlers - pass info pointer to get station_id in callbacks
     CS104_Connection_setASDUReceivedHandler(info->connection, asduReceivedHandler, info);
     CS104_Connection_setConnectionHandler(info->connection, connectionHandler, info);
+    CS104_Connection_setRawMessageHandler(info->connection, rawMessageHandler, info);
 
     // Connect
     if (!CS104_Connection_connect(info->connection)) {
@@ -253,15 +263,77 @@ void IEC104ConnectionManager::reconnectThreadFunc(const std::string& stationId, 
     }
 }
 
-CS104_Connection IEC104ConnectionManager::createConnection(const IEC104ConnectionInfo& info) {
+CS104_Connection IEC104ConnectionManager::createConnection(IEC104ConnectionInfo& info) {
     CS104_Connection conn = nullptr;
 
-    // Create basic connection (TLS not supported in this build)
-    conn = CS104_Connection_create(info.host.c_str(), info.port);
+    if (info.useTLS) {
+        // Create TLS connection
+        std::cout << "[IEC104] Creating TLS connection to " << info.host << ":" << info.port << std::endl;
 
-    if (conn) {
-        // Set connection timeout (10 seconds)
-        CS104_Connection_setConnectTimeout(conn, 10);
+        // Destroy any previous TLS config before creating a new one
+        if (info.tlsConfig) {
+            TLSConfiguration_destroy(info.tlsConfig);
+            info.tlsConfig = nullptr;
+        }
+
+        // Create TLS configuration (stored in info so it can be properly destroyed later)
+        info.tlsConfig = TLSConfiguration_create();
+        TLSConfiguration_setClientMode(info.tlsConfig);
+
+        // Set TLS event handler for detailed debugging
+        auto tlsEventHandler = [](void* param, TLSEventLevel level, int eventCode, const char* message, TLSConnection con) {
+            const char* levelStr = (level == TLS_SEC_EVT_INFO) ? "INFO" :
+                                   (level == TLS_SEC_EVT_WARNING) ? "WARNING" : "ERROR";
+            std::cout << "[IEC104 TLS] " << levelStr << " eventCode=" << eventCode << " msg=" << (message ? message : "null") << std::endl;
+        };
+        TLSConfiguration_setEventHandler(info.tlsConfig, tlsEventHandler, nullptr);
+
+        // Set CA certificate for verifying server
+        if (!info.caFile.empty()) {
+            if (TLSConfiguration_addCACertificateFromFile(info.tlsConfig, info.caFile.c_str())) {
+                std::cout << "[IEC104] Loaded CA certificate: " << info.caFile << std::endl;
+            } else {
+                std::cerr << "[IEC104] Failed to load CA certificate: " << info.caFile << std::endl;
+            }
+        }
+
+        // Set client certificate for mutual authentication
+        if (!info.certFile.empty()) {
+            if (TLSConfiguration_setOwnCertificateFromFile(info.tlsConfig, info.certFile.c_str())) {
+                std::cout << "[IEC104] Loaded client certificate: " << info.certFile << std::endl;
+            } else {
+                std::cerr << "[IEC104] Failed to load client certificate: " << info.certFile << std::endl;
+            }
+        }
+
+        // Set client private key
+        if (!info.keyFile.empty()) {
+            if (TLSConfiguration_setOwnKeyFromFile(info.tlsConfig, info.keyFile.c_str(), nullptr)) {
+                std::cout << "[IEC104] Loaded client key: " << info.keyFile << std::endl;
+            } else {
+                std::cerr << "[IEC104] Failed to load client key: " << info.keyFile << std::endl;
+            }
+        }
+
+        // Create secure connection
+        conn = CS104_Connection_createSecure(info.host.c_str(), info.port, info.tlsConfig);
+
+        if (conn) {
+            CS104_Connection_setConnectTimeout(conn, 10);
+            std::cout << "[IEC104] TLS connection created successfully" << std::endl;
+        } else {
+            std::cerr << "[IEC104] Failed to create TLS connection" << std::endl;
+            TLSConfiguration_destroy(info.tlsConfig);
+            info.tlsConfig = nullptr;
+        }
+    } else {
+        // Create plain TCP connection
+        conn = CS104_Connection_create(info.host.c_str(), info.port);
+
+        if (conn) {
+            // Set connection timeout (10 seconds)
+            CS104_Connection_setConnectTimeout(conn, 10);
+        }
     }
 
     return conn;
@@ -341,15 +413,46 @@ bool IEC104ConnectionManager::sendControl(const std::string& stationId, const Co
     bool result = false;
 
     if (cmd.type == "single") {
-        // C_SC_NA_1 - Single command
+        // C_SC_NA_1 - Single command (Type 45)
         auto sc = SingleCommand_create(nullptr, cmd.ioa, cmd.value != 0, cmd.select, false);
         result = CS104_Connection_sendProcessCommandEx(it->second->connection, CS101_COT_ACTIVATION, cmd.ca, (InformationObject)sc);
         SingleCommand_destroy(sc);
     } else if (cmd.type == "double") {
-        // C_DC_NA_1 - Double command
+        // C_DC_NA_1 - Double command (Type 46)
         auto dc = DoubleCommand_create(nullptr, cmd.ioa, cmd.value, cmd.select, false);
         result = CS104_Connection_sendProcessCommandEx(it->second->connection, CS101_COT_ACTIVATION, cmd.ca, (InformationObject)dc);
         DoubleCommand_destroy(dc);
+    } else if (cmd.type == "step") {
+        // C_RC_NA_1 - Step command (Type 47)
+        // value: 1 = lower (退), 2 = higher (进)
+        StepCommandValue stepValue = (cmd.value == 2) ? IEC60870_STEP_HIGHER : IEC60870_STEP_LOWER;
+        auto sc = StepCommand_create(nullptr, cmd.ioa, stepValue, cmd.select, false);
+        result = CS104_Connection_sendProcessCommandEx(it->second->connection, CS101_COT_ACTIVATION, cmd.ca, (InformationObject)sc);
+        StepCommand_destroy(sc);
+    } else if (cmd.type == "normalized") {
+        // C_SE_NA_1 - Normalized setpoint command (Type 48)
+        // value is normalized (-1.0 ~ 1.0), stored as int16_t
+        float normalizedValue = (float)cmd.value / 32767.0f;
+        auto sp = SetpointCommandNormalized_create(nullptr, cmd.ioa, normalizedValue, cmd.select, false);
+        result = CS104_Connection_sendProcessCommandEx(it->second->connection, CS101_COT_ACTIVATION, cmd.ca, (InformationObject)sp);
+        SetpointCommandNormalized_destroy(sp);
+    } else if (cmd.type == "scaled") {
+        // C_SE_NB_1 - Scaled setpoint command (Type 49)
+        auto sp = SetpointCommandScaled_create(nullptr, cmd.ioa, cmd.value, cmd.select, false);
+        result = CS104_Connection_sendProcessCommandEx(it->second->connection, CS101_COT_ACTIVATION, cmd.ca, (InformationObject)sp);
+        SetpointCommandScaled_destroy(sp);
+    } else if (cmd.type == "float") {
+        // C_SE_NC_1 - Float setpoint command (Type 50)
+        float floatValue = static_cast<float>(cmd.value);
+        auto sp = SetpointCommandShort_create(nullptr, cmd.ioa, floatValue, cmd.select, false);
+        result = CS104_Connection_sendProcessCommandEx(it->second->connection, CS101_COT_ACTIVATION, cmd.ca, (InformationObject)sp);
+        SetpointCommandShort_destroy(sp);
+    } else if (cmd.type == "bitstring") {
+        // C_BO_NA_1 - Bitstring command (Type 51)
+        // Note: Bitstring32Command doesn't have select/qu parameters
+        auto bs = Bitstring32Command_create(nullptr, cmd.ioa, cmd.value);
+        result = CS104_Connection_sendProcessCommandEx(it->second->connection, CS101_COT_ACTIVATION, cmd.ca, (InformationObject)bs);
+        Bitstring32Command_destroy(bs);
     }
 
     std::cout << "[IEC104] Send control to " << stationId
@@ -371,6 +474,10 @@ void IEC104ConnectionManager::setASDUDataCallback(ASDUDataCallback cb) {
 
 void IEC104ConnectionManager::setPacketCallback(PacketCallback cb) {
     packetCallback_ = cb;
+}
+
+void IEC104ConnectionManager::setControlResultCallback(ControlResultCallback cb) {
+    controlResultCallback_ = cb;
 }
 
 // IPCBridgeCallback implementation
@@ -449,9 +556,60 @@ void IEC104ConnectionManager::connectionHandler(void* param, CS104_Connection co
     }
 }
 
+static void rawMessageHandler(void* param, uint8_t* msg, int msgSize, bool sent) {
+    auto* info = static_cast<IEC104ConnectionInfo*>(param);
+    if (!info) return;
+
+    std::string stationId = info->stationId;
+    std::string direction = sent ? "TX" : "RX";
+
+    // Print hex dump
+    std::cout << "[IEC104] " << direction << " " << stationId << " (" << msgSize << " bytes): ";
+    for (int i = 0; i < msgSize; i++) {
+        printf("%02X ", msg[i]);
+    }
+    std::cout << std::endl;
+}
+
 void IEC104ConnectionManager::parseASDU(const std::string& stationId, CS101_ASDU asdu) {
     int typeId = CS101_ASDU_getTypeID(asdu);
     int numElements = CS101_ASDU_getNumberOfElements(asdu);
+    int cot = CS101_ASDU_getCOT(asdu);
+
+    // Check for control command response (COT = 7 ACTCON or 10 ACTTERM)
+    if ((cot == CS101_COT_ACTIVATION_CON || cot == CS101_COT_ACTIVATION_TERMINATION) && numElements > 0) {
+        auto io = CS101_ASDU_getElement(asdu, 0);
+        uint32_t ioa = InformationObject_getObjectAddress(io);
+
+        bool isPositive = CS101_ASDU_isNegative(asdu) == false;
+        std::string message;
+
+        if (cot == CS101_COT_ACTIVATION_CON) {
+            message = isPositive ? "ACT_CON (positive)" : "ACT_CON (negative)";
+        } else {
+            message = "ACT_TERM";
+        }
+
+        std::cout << "[IEC104] Control response: IOA=" << ioa
+                  << " COT=" << cot << " " << message << std::endl;
+
+        // Determine command type from response (simplified - could be improved)
+        std::string cmdType = "unknown";
+        if (typeId == M_SP_NA_1 || typeId == M_SP_TA_1 || typeId == M_SP_TB_1) {
+            cmdType = "single";
+        } else if (typeId == M_DP_NA_1 || typeId == M_DP_TA_1 || typeId == M_DP_TB_1) {
+            cmdType = "double";
+        }
+
+        // Call callback if registered
+        if (controlResultCallback_) {
+            controlResultCallback_(stationId, ioa, cmdType, isPositive, message);
+        }
+
+        // Don't process as regular data - this is a control response
+        InformationObject_destroy(io);
+        return;
+    }
 
     std::vector<DigitalPointData> digital;
     std::vector<TelemetryPointData> telemetry;
@@ -992,8 +1150,33 @@ void IEC104ConnectionManager::parseASDU(const std::string& stationId, CS101_ASDU
             break;
         }
 
+        // ==================== Control Direction Commands ====================
+        case C_IC_NA_1: { // Interrogation command (Type 100)
+            for (int i = 0; i < numElements; i++) {
+                auto ic = (InterrogationCommand)CS101_ASDU_getElement(asdu, i);
+                int qoi = InterrogationCommand_getQOI(ic);
+                int cot = CS101_ASDU_getCOT(asdu);
+
+                if (cot == CS101_COT_ACTIVATION_CON) {
+                    std::cout << "[IEC104] Interrogation ACT_CON received, QOI=" << (int)qoi << std::endl;
+                } else if (cot == CS101_COT_ACTIVATION_TERMINATION) {
+                    std::cout << "[IEC104] Interrogation ACT_TERM received, QOI=" << (int)qoi << std::endl;
+                } else {
+                    std::cout << "[IEC104] Interrogation command received, QOI=" << (int)qoi << ", CoT=" << cot << std::endl;
+                }
+
+                InterrogationCommand_destroy(ic);
+            }
+            break;
+        }
+
         default:
-            std::cout << "[IEC104] Unknown ASDU type: " << typeId << std::endl;
+            // Handle control command responses (C_ prefix types)
+            if (typeId >= 45 && typeId <= 67) {
+                std::cout << "[IEC104] Control command response (Type " << typeId << ")" << std::endl;
+            } else {
+                std::cout << "[IEC104] Unknown ASDU type: " << typeId << std::endl;
+            }
             break;
     }
 
