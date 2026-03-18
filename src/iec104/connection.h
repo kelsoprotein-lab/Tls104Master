@@ -187,6 +187,7 @@ private:
     // lib60870 callbacks
     static bool asduReceivedHandler(void* param, int size, CS101_ASDU asdu);
     static void connectionHandler(void* param, CS104_Connection connection, CS104_ConnectionEvent event);
+    static void rawMessageHandler(void* param, uint8_t* msg, int msgSize, bool sent);
 
     // ASDU parsing
     void parseASDU(const std::string& stationId, CS101_ASDU asdu);

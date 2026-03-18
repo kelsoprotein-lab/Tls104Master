@@ -15,8 +15,6 @@ static thread_local std::string g_currentStationId;
 
 namespace tls104 {
 
-// Forward declaration for raw message handler
-static void rawMessageHandler(void* param, uint8_t* msg, int msgSize, bool sent);
 
 // Helper function to extract timestamp from CP56Time2a (7-byte time)
 // Returns milliseconds since epoch
@@ -556,7 +554,7 @@ void IEC104ConnectionManager::connectionHandler(void* param, CS104_Connection co
     }
 }
 
-static void rawMessageHandler(void* param, uint8_t* msg, int msgSize, bool sent) {
+void IEC104ConnectionManager::rawMessageHandler(void* param, uint8_t* msg, int msgSize, bool sent) {
     auto* info = static_cast<IEC104ConnectionInfo*>(param);
     if (!info) return;
 
@@ -569,6 +567,12 @@ static void rawMessageHandler(void* param, uint8_t* msg, int msgSize, bool sent)
         printf("%02X ", msg[i]);
     }
     std::cout << std::endl;
+
+    // Forward to packet callback
+    auto* self = static_cast<IEC104ConnectionManager*>(info->holder);
+    if (self && self->packetCallback_) {
+        self->packetCallback_(stationId, sent, std::vector<uint8_t>(msg, msg + msgSize));
+    }
 }
 
 void IEC104ConnectionManager::parseASDU(const std::string& stationId, CS101_ASDU asdu) {

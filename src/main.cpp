@@ -14,6 +14,7 @@
 #include <cstring>
 #include <map>
 #include <sstream>
+#include <iomanip>
 
 // Platform-specific headers
 #ifdef _WIN32
@@ -403,16 +404,20 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, signalHandler);
 
     // Parse arguments
-    int httpPort = 9999;
+    int httpPort = 19876;
+    bool openBrowser = true;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             httpPort = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "--no-browser") == 0) {
+            openBrowser = false;
         } else if (strcmp(argv[i], "--help") == 0) {
             std::cout << "Usage: tls104_master_win [options]" << std::endl;
             std::cout << "Options:" << std::endl;
-            std::cout << "  -p <port>    HTTP server port (default: 9999)" << std::endl;
-            std::cout << "  --help       Show this help" << std::endl;
+            std::cout << "  -p <port>        HTTP server port (default: 19876)" << std::endl;
+            std::cout << "  --no-browser     Do not open browser on startup" << std::endl;
+            std::cout << "  --help           Show this help" << std::endl;
             return 0;
         }
     }
@@ -482,6 +487,24 @@ int main(int argc, char* argv[]) {
         }
     });
 
+    // Set up packet callback - forward raw bytes to frontend via SSE
+    g_iec104->setPacketCallback([](const std::string& stationId, bool sent, const std::vector<uint8_t>& data) {
+        if (!g_httpServer) return;
+
+        // Convert bytes to uppercase hex string
+        std::ostringstream hex;
+        for (size_t i = 0; i < data.size(); i++) {
+            if (i > 0) hex << " ";
+            hex << std::hex << std::uppercase << std::setfill('0') << std::setw(2) << (int)data[i];
+        }
+
+        std::ostringstream json;
+        json << "{\"type\":\"packet\",\"station_id\":\"" << stationId << "\","
+             << "\"data\":{\"sent\":" << (sent ? "true" : "false")
+             << ",\"data\":\"" << hex.str() << "\"}}";
+        g_httpServer->broadcast(json.str());
+    });
+
     // Set up control result callback
     g_iec104->setControlResultCallback([](const std::string& stationId,
                                            uint32_t ioa,
@@ -521,8 +544,9 @@ int main(int argc, char* argv[]) {
     std::cout << "[Main] Open browser at: " << url << std::endl;
 
 #ifdef _WIN32
-    // Open browser automatically on Windows - disabled in Git Bash
-    // ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (openBrowser) {
+        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
 #endif
 
     std::cout << "[Main] Ready! Press Ctrl+C to exit" << std::endl;

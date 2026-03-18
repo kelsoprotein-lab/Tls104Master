@@ -17,9 +17,42 @@
         .status-connecting { background: #e6a23c; }
         .status-error { background: #f56c6c; }
         .data-table { margin-top: 16px; }
-        .packet-monitor { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; }
-        .packet-sent { color: #4ec9b0; }
-        .packet-received { color: #ce9178; }
+        .packet-monitor { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; height: 380px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+        .packet-sent { color: #4ec9b0; font-weight: bold; }
+        .packet-received { color: #ce9178; font-weight: bold; }
+        /* 通信细节条目 */
+        .comm-entry { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid #2a2a2a; }
+        .comm-header { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+        .comm-time { color: #858585; font-size: 11px; }
+        .comm-station { color: #569cd6; font-size: 11px; }
+        .comm-size { color: #555; font-size: 10px; }
+        /* 帧类型徽章 */
+        .frame-badge { font-size: 10px; padding: 1px 4px; border-radius: 3px; font-weight: bold; }
+        .badge-u { background: #1a3a5c; color: #9cdcfe; }
+        .badge-s { background: #1a3a2a; color: #4ec9b0; }
+        .badge-i { background: #3a2d00; color: #dcdcaa; }
+        .frame-func { color: #9cdcfe; }
+        .frame-row { display: flex; align-items: center; gap: 6px; }
+        /* ASDU 解析块 */
+        .asdu-block { margin-left: 16px; border-left: 2px solid #333; padding-left: 8px; margin-top: 2px; }
+        .asdu-title { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 2px; }
+        .asdu-type-name { color: #dcdcaa; }
+        .asdu-cot { color: #9cdcfe; font-size: 11px; }
+        .asdu-flag { background: #c66; color: #fff; font-size: 10px; padding: 0 3px; border-radius: 2px; }
+        .asdu-neg { background: #c44; }
+        .sq-compact { color: #b5cea8; font-size: 11px; font-style: italic; }
+        /* 信息体列表 */
+        .obj-list { margin: 2px 0; }
+        .obj-row { display: flex; align-items: center; gap: 5px; line-height: 1.7; flex-wrap: wrap; }
+        .obj-tree { color: #444; }
+        .obj-ioa { color: #b5cea8; min-width: 78px; font-size: 11px; }
+        .obj-val { color: #ce9178; }
+        .obj-ts { color: #608b4e; font-size: 10px; }
+        .obj-qds { font-size: 10px !important; padding: 0 4px !important; height: 16px !important; line-height: 16px !important; }
+        .obj-err { color: #f44; font-size: 10px; }
+        /* 原始视图 */
+        .comm-raw { color: #d4d4d4; line-height: 1.8; }
+        .parse-err { color: #f66; font-size: 11px; }
         .highlight { animation: highlight 3s ease-out; }
         @keyframes highlight {
             0% { background: #fdf6ec; }
@@ -178,30 +211,98 @@
             </div>
         </div>
 
-        <!-- 报文监控 -->
+        <!-- 通信细节 -->
         <el-card style="margin-top: 20px;">
             <template #header>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span>报文监控</span>
-                    <el-button size="small" type="danger" @click="clearPackets">清空</el-button>
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <span>通信细节</span>
+                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        <el-select v-model="commStationFilter" size="small" style="width: 160px;" placeholder="全部站点" clearable>
+                            <el-option label="全部站点" value=""></el-option>
+                            <el-option v-for="s in stations" :key="s.station_id" :label="s.station_id" :value="s.station_id"></el-option>
+                        </el-select>
+                        <el-radio-group v-model="commViewMode" size="small">
+                            <el-radio-button label="parsed">解析报文</el-radio-button>
+                            <el-radio-button label="raw">原始报文</el-radio-button>
+                        </el-radio-group>
+                        <span style="color: #909399; font-size: 12px;">共 {{ filteredCommPackets.length }} 条</span>
+                        <el-button size="small" type="danger" @click="clearPackets">清空</el-button>
+                    </div>
                 </div>
             </template>
             <el-collapse v-model="activeCollapse">
                 <el-collapse-item name="packets">
                     <template #title>
-                        <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; padding-right: 10px;">
-                            <span>{{ activeCollapse.includes('packets') ? '收起' : '展开' }}报文监控</span>
-                            <span style="color: #909399; font-size: 12px;">共 {{ packets.length }} 条</span>
-                        </div>
+                        {{ activeCollapse.includes('packets') ? '收起' : '展开' }}通信详情
                     </template>
-                    <div class="packet-monitor" id="packetMonitor">
-                        <div v-for="(packet, index) in packets" :key="index">
-                            <span :class="packet.sent ? 'packet-sent' : 'packet-received'">
-                                {{ packet.sent ? '→' : '←' }}
-                            </span>
-                            {{ packet.data }}
+                    <div class="packet-monitor" id="packetMonitor" @scroll.passive="onPacketScroll">
+                        <div :style="{ paddingTop: packetVirtualItems.paddingTop + 'px', paddingBottom: packetVirtualItems.paddingBottom + 'px' }">
+                        <div v-for="(pkt, i) in packetVirtualItems.items" :key="packetVirtualItems.startIndex + i" class="comm-entry">
+                            <!-- 条目头：方向 + 时间 + 站点 + 字节数 -->
+                            <div class="comm-header">
+                                <span :class="pkt.sent ? 'packet-sent' : 'packet-received'">
+                                    {{ pkt.sent ? '→ TX' : '← RX' }}
+                                </span>
+                                <span class="comm-time">{{ pkt.displayTime }}</span>
+                                <span class="comm-station">{{ pkt.station_id }}</span>
+                                <span class="comm-size">{{ pkt.byteCount }}B</span>
+                            </div>
+                            <!-- 解析视图 -->
+                            <template v-if="commViewMode === 'parsed'">
+                                <div class="comm-parsed" v-if="pkt.parsed">
+                                    <!-- U帧 -->
+                                    <div v-if="pkt.parsed.frameType === 'U'" class="frame-row">
+                                        <span class="frame-badge badge-u">[U帧]</span>
+                                        <span class="frame-func">{{ pkt.parsed.func }}</span>
+                                    </div>
+                                    <!-- S帧 -->
+                                    <div v-else-if="pkt.parsed.frameType === 'S'" class="frame-row">
+                                        <span class="frame-badge badge-s">[S帧]</span>
+                                        <span> SNR={{ pkt.parsed.snr }}</span>
+                                    </div>
+                                    <!-- I帧 -->
+                                    <div v-else-if="pkt.parsed.frameType === 'I'">
+                                        <div class="frame-row">
+                                            <span class="frame-badge badge-i">[I帧]</span>
+                                            <span> SNS={{ pkt.parsed.sns }} SNR={{ pkt.parsed.snr }}</span>
+                                        </div>
+                                        <div v-if="pkt.parsed.asdu" class="asdu-block">
+                                            <div class="asdu-title">
+                                                <span class="asdu-type-name">{{ pkt.parsed.asdu.typeName }}</span>
+                                                <span class="asdu-cot">COT:{{ pkt.parsed.asdu.cotName }}({{ pkt.parsed.asdu.cot }}) CA:{{ pkt.parsed.asdu.ca }} NumObj:{{ pkt.parsed.asdu.numObj }}</span>
+                                                <span v-if="pkt.parsed.asdu.test" class="asdu-flag">TEST</span>
+                                                <span v-if="pkt.parsed.asdu.negative" class="asdu-flag asdu-neg">NEG</span>
+                                            </div>
+                                            <!-- SQ=1 紧凑 -->
+                                            <div v-if="pkt.parsed.asdu.sq" class="sq-compact">
+                                                SQ=是，起始 IOA:{{ pkt.parsed.asdu.startIoa }}，共 {{ pkt.parsed.asdu.numObj }} 个对象
+                                            </div>
+                                            <!-- SQ=0 信息体 -->
+                                            <div v-else-if="pkt.parsed.asdu.objects" class="obj-list">
+                                                <div v-for="(obj, oi) in pkt.parsed.asdu.objects" :key="oi" class="obj-row">
+                                                    <span class="obj-tree">{{ oi < pkt.parsed.asdu.objects.length - 1 ? '├' : '└' }}</span>
+                                                    <span class="obj-ioa">IOA:{{ String(obj.ioa).padStart(6,'0') }}</span>
+                                                    <span v-if="obj.value !== undefined" class="obj-val">{{ obj.value }}</span>
+                                                    <span v-if="obj.timestamp" class="obj-ts">[{{ obj.timestamp }}]</span>
+                                                    <el-tag v-if="obj.quality" :type="getQdsTagType(obj.quality)" size="small" class="obj-qds">{{ formatQds(obj.quality) }}</el-tag>
+                                                    <span v-if="obj.parseError" class="obj-err">[解析错误]</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- 解析失败 -->
+                                    <div v-else class="parse-err">[解析失败] {{ pkt.rawHex.substring(0, 30) }}...</div>
+                                </div>
+                            </template>
+                            <!-- 原始视图 -->
+                            <template v-else>
+                                <div class="comm-raw">
+                                    <div v-for="(line, li) in pkt.rawLines" :key="li">{{ line }}</div>
+                                </div>
+                            </template>
                         </div>
-                    </div>
+                        </div><!-- /padding-wrapper -->
+                    </div><!-- /packet-monitor -->
                 </el-collapse-item>
             </el-collapse>
         </el-card>
@@ -317,6 +418,234 @@
         const { createApp, ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick, getCurrentInstance } = Vue;
         const { ElMessage, ElMessageBox } = ElementPlus;
 
+        // ================================================================
+        // IEC 104 APDU 解析器
+        // ================================================================
+
+        const U_FRAME_FUNCS = {
+            0x07: 'STARTDT ACT', 0x0B: 'STARTDT CON',
+            0x13: 'STOPDT ACT',  0x23: 'STOPDT CON',
+            0x43: 'TESTFR ACT',  0x83: 'TESTFR CON',
+        };
+
+        const ASDU_TYPE_NAMES = {
+            1:'M_SP_NA_1 单点遥信', 2:'M_SP_TA_1 带CP24时标单点', 3:'M_DP_NA_1 双点遥信',
+            4:'M_DP_TA_1 带CP24时标双点', 5:'M_ST_NA_1 步位置', 6:'M_ST_TA_1 带CP24时标步位置',
+            7:'M_BO_NA_1 比特位串', 8:'M_BO_TA_1 带CP24时标比特串',
+            9:'M_ME_NA_1 归一化遥测', 10:'M_ME_TA_1 带CP24归一化', 11:'M_ME_NB_1 标度化遥测',
+            12:'M_ME_TB_1 带CP24标度化', 13:'M_ME_NC_1 短浮点遥测', 14:'M_ME_TC_1 带CP24浮点',
+            15:'M_IT_NA_1 累积量', 16:'M_IT_TA_1 带CP24累积量',
+            17:'M_EP_TA_1 继电保护事件', 18:'M_EP_TB_1 继电保护成组启动',
+            19:'M_EP_TC_1 继电保护成组输出', 20:'M_PS_NA_1 有时标成组单点',
+            21:'M_ME_ND_1 归一化(无品质)',
+            30:'M_SP_TB_1 带CP56时标单点', 31:'M_DP_TB_1 带CP56时标双点',
+            32:'M_ST_TB_1 带CP56时标步位置', 33:'M_BO_TB_1 带CP56时标比特串',
+            34:'M_ME_TD_1 带CP56归一化', 35:'M_ME_TE_1 带CP56标度化',
+            36:'M_ME_TF_1 带CP56浮点', 37:'M_IT_TB_1 带CP56累积量',
+            38:'M_EP_TD_1 带CP56继电保护事件', 39:'M_EP_TE_1 带CP56保护成组启动',
+            40:'M_EP_TF_1 带CP56保护成组输出', 41:'M_IT_TK_1 带时标累积量',
+            45:'C_SC_NA_1 单点遥控', 46:'C_DC_NA_1 双点遥控', 47:'C_RC_NA_1 步调节命令',
+            48:'C_SE_NA_1 归一化设定值', 49:'C_SE_NB_1 标度化设定值',
+            50:'C_SE_NC_1 浮点设定值', 51:'C_BO_NA_1 位串命令',
+            70:'M_EI_NA_1 初始化结束',
+            100:'C_IC_NA_1 总召唤', 101:'C_CI_NA_1 计数量召唤',
+            103:'C_CS_NA_1 时钟同步', 104:'C_TS_NA_1 测试命令',
+            105:'C_RP_NA_1 复位进程',
+        };
+
+        const COT_NAMES = {
+            1:'周期', 2:'背景扫描', 3:'突发', 4:'初始化', 5:'请求',
+            6:'激活', 7:'激活确认', 8:'停止激活', 9:'停止激活确认', 10:'激活终止',
+            11:'远方命令响应', 12:'本地命令响应', 13:'文件传输',
+            20:'响应站召唤', 21:'响应1组', 22:'响应2组', 23:'响应3组', 24:'响应4组',
+            25:'响应5组', 26:'响应6组', 27:'响应7组', 28:'响应8组', 29:'响应9组',
+            30:'响应10组', 31:'响应11组', 32:'响应12组', 33:'响应13组',
+            34:'响应14组', 35:'响应15组', 36:'响应16组',
+            37:'响应计数量总召', 38:'响应1组计数量', 39:'响应2组计数量',
+            40:'响应3组计数量', 41:'响应4组计数量',
+            44:'未知类型标识', 45:'未知传送原因', 46:'未知公共地址', 47:'未知信息体地址',
+        };
+
+        // ---- 品质描述词解析 ----
+        function parseQDS(byte) {
+            return { raw: byte, ov: !!(byte & 0x01), bl: !!(byte & 0x10), sb: !!(byte & 0x20), nt: !!(byte & 0x40), iv: !!(byte & 0x80) };
+        }
+        function parseSIQ(byte) {
+            return { value: byte & 0x01, quality: parseQDS(byte & 0xF0) };
+        }
+        function parseDIQ(byte) {
+            const v = byte & 0x03;
+            return { value: v, valueName: ['不确定(0)','分(OFF)','合(ON)','不确定(3)'][v], quality: parseQDS(byte & 0xF0) };
+        }
+
+        // ---- 时间标签解析 ----
+        function parseCP56Time2a(bytes, off) {
+            if (bytes.length < off + 7) return null;
+            const ms   = bytes[off] | (bytes[off+1] << 8);
+            const minB = bytes[off+2], hourB = bytes[off+3], dayB = bytes[off+4];
+            const monB = bytes[off+5], yearB = bytes[off+6];
+            const min = minB & 0x3F, iv = !!(minB & 0x80);
+            const hour = hourB & 0x1F, su = !!(hourB & 0x80);
+            const day = dayB & 0x1F;
+            const month = monB & 0x0F;
+            const year = (yearB & 0x7F) + 2000;
+            const sec = Math.floor((ms % 60000) / 1000), msPart = ms % 1000;
+            const p = n => String(n).padStart(2,'0'), p3 = n => String(n).padStart(3,'0');
+            return { raw: `${year}-${p(month)}-${p(day)} ${p(hour)}:${p(min)}:${p(sec)}.${p3(msPart)}${iv?' IV':''}${su?' SU':''}` };
+        }
+        function parseCP24Time2a(bytes, off) {
+            if (bytes.length < off + 3) return null;
+            const ms = bytes[off] | (bytes[off+1] << 8);
+            const minB = bytes[off+2];
+            const min = minB & 0x3F, iv = !!(minB & 0x80);
+            const sec = Math.floor((ms % 60000) / 1000), msPart = ms % 1000;
+            const p = n => String(n).padStart(2,'0'), p3 = n => String(n).padStart(3,'0');
+            return { raw: `${p(min)}:${p(sec)}.${p3(msPart)}${iv?' IV':''}` };
+        }
+
+        // ---- 基础读取工具 ----
+        function readIOA(b, o)    { return b[o] | (b[o+1] << 8) | (b[o+2] << 16); }
+        function readInt16(b, o)  { const v = b[o] | (b[o+1] << 8); return v >= 0x8000 ? v - 0x10000 : v; }
+        function readUInt32(b, o) { return (b[o] | (b[o+1]<<8) | (b[o+2]<<16) | (b[o+3]<<24)) >>> 0; }
+        function readFloat32(b, o) {
+            if (b.length < o + 4) return 0;
+            const buf = new ArrayBuffer(4); const v = new DataView(buf);
+            v.setUint8(0,b[o]); v.setUint8(1,b[o+1]); v.setUint8(2,b[o+2]); v.setUint8(3,b[o+3]);
+            return v.getFloat32(0, true);
+        }
+        function decodeVTI(vti) {
+            const pos = vti & 0x7F; return { val: pos >= 64 ? pos - 128 : pos, transient: !!(vti & 0x80) };
+        }
+
+        // ---- ASDU 信息体解析（按 TypeID）----
+        function parseASDUObjects(typeId, bytes, asduStart, sq, numObj) {
+            let off = asduStart;
+            const objects = [];
+            let startIoa = 0;
+            if (sq) { if (off + 3 > bytes.length) return { objects, startIoa }; startIoa = readIOA(bytes, off); off += 3; }
+
+            for (let i = 0; i < numObj && i < 100; i++) {
+                let ioa;
+                if (sq) { ioa = startIoa + i; }
+                else { if (off + 3 > bytes.length) { objects.push({ ioa: 0, parseError: true }); break; } ioa = readIOA(bytes, off); off += 3; }
+                const obj = { ioa };
+                try {
+                    switch (typeId) {
+                        case 1:  { const s=parseSIQ(bytes[off++]); obj.value=s.value?'合(ON)':'分(OFF)'; obj.quality=s.quality; break; }
+                        case 2:  { const s=parseSIQ(bytes[off++]); obj.value=s.value?'合(ON)':'分(OFF)'; obj.quality=s.quality; const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 3:  { const d=parseDIQ(bytes[off++]); obj.value=d.valueName; obj.quality=d.quality; break; }
+                        case 4:  { const d=parseDIQ(bytes[off++]); obj.value=d.valueName; obj.quality=d.quality; const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 5:  { const v=decodeVTI(bytes[off++]); obj.value=`${v.val}${v.transient?' T':''}`; obj.quality=parseQDS(bytes[off++]); break; }
+                        case 6:  { const v=decodeVTI(bytes[off++]); obj.value=`${v.val}${v.transient?' T':''}`; obj.quality=parseQDS(bytes[off++]); const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 7:  { obj.value='0x'+readUInt32(bytes,off).toString(16).toUpperCase().padStart(8,'0'); off+=4; obj.quality=parseQDS(bytes[off++]); break; }
+                        case 8:  { obj.value='0x'+readUInt32(bytes,off).toString(16).toUpperCase().padStart(8,'0'); off+=4; obj.quality=parseQDS(bytes[off++]); const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 9:  { obj.value=(readInt16(bytes,off)/32767).toFixed(5); off+=2; obj.quality=parseQDS(bytes[off++]); break; }
+                        case 10: { obj.value=(readInt16(bytes,off)/32767).toFixed(5); off+=2; obj.quality=parseQDS(bytes[off++]); const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 11: { obj.value=readInt16(bytes,off); off+=2; obj.quality=parseQDS(bytes[off++]); break; }
+                        case 12: { obj.value=readInt16(bytes,off); off+=2; obj.quality=parseQDS(bytes[off++]); const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 13: { obj.value=readFloat32(bytes,off).toFixed(4); off+=4; obj.quality=parseQDS(bytes[off++]); break; }
+                        case 14: { obj.value=readFloat32(bytes,off).toFixed(4); off+=4; obj.quality=parseQDS(bytes[off++]); const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 15: { const cv=readUInt32(bytes,off); off+=4; const scq=bytes[off++]; obj.value=String(cv)+(scq&0x20?' [进位]':''); obj.quality={raw:scq,ov:false,bl:false,sb:!!(scq&0x40),nt:false,iv:!!(scq&0x80)}; obj.seqNum=scq&0x1F; break; }
+                        case 16: { const cv=readUInt32(bytes,off); off+=4; const scq=bytes[off++]; obj.value=String(cv)+(scq&0x20?' [进位]':''); obj.quality={raw:scq,ov:false,bl:false,sb:false,nt:false,iv:!!(scq&0x80)}; const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 17: { const sep=bytes[off++]; const es=sep&0x03; obj.value=['不确定','关闭','打开','不确定'][es]; obj.quality=parseQDS(sep&0xF0); if(off+1<bytes.length){obj.elapsed=(bytes[off]|(bytes[off+1]<<8))+'ms';} off+=2; const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 18: { const spe=bytes[off++]; const qdp=bytes[off++]; obj.value='SPE=0x'+spe.toString(16).toUpperCase().padStart(2,'0'); obj.quality=parseQDS(qdp); off+=2; const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 19: { const oci=bytes[off++]; const qdp=bytes[off++]; obj.value='OCI=0x'+oci.toString(16).toUpperCase().padStart(2,'0'); obj.quality=parseQDS(qdp); off+=2; const t=parseCP24Time2a(bytes,off); off+=3; if(t) obj.timestamp=t.raw; break; }
+                        case 21: { obj.value=(readInt16(bytes,off)/32767).toFixed(5); off+=2; break; }
+                        case 30: { const s=parseSIQ(bytes[off++]); obj.value=s.value?'合(ON)':'分(OFF)'; obj.quality=s.quality; const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 31: { const d=parseDIQ(bytes[off++]); obj.value=d.valueName; obj.quality=d.quality; const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 32: { const v=decodeVTI(bytes[off++]); obj.value=`${v.val}${v.transient?' T':''}`; obj.quality=parseQDS(bytes[off++]); const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 33: { obj.value='0x'+readUInt32(bytes,off).toString(16).toUpperCase().padStart(8,'0'); off+=4; obj.quality=parseQDS(bytes[off++]); const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 34: { obj.value=(readInt16(bytes,off)/32767).toFixed(5); off+=2; obj.quality=parseQDS(bytes[off++]); const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 35: { obj.value=readInt16(bytes,off); off+=2; obj.quality=parseQDS(bytes[off++]); const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 36: { obj.value=readFloat32(bytes,off).toFixed(4); off+=4; obj.quality=parseQDS(bytes[off++]); const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 37: { const cv=readUInt32(bytes,off); off+=4; const scq=bytes[off++]; obj.value=String(cv)+(scq&0x20?' [进位]':''); obj.quality={raw:scq,ov:false,bl:false,sb:false,nt:false,iv:!!(scq&0x80)}; const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 38: { const sep=bytes[off++]; obj.value=['不确定','关闭','打开','不确定'][sep&0x03]; obj.quality=parseQDS(sep&0xF0); if(off+1<bytes.length){obj.elapsed=(bytes[off]|(bytes[off+1]<<8))+'ms';} off+=2; const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 39: { const spe=bytes[off++]; const qdp=bytes[off++]; obj.value='SPE=0x'+spe.toString(16).toUpperCase().padStart(2,'0'); obj.quality=parseQDS(qdp); off+=2; const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 40: { const oci=bytes[off++]; const qdp=bytes[off++]; obj.value='OCI=0x'+oci.toString(16).toUpperCase().padStart(2,'0'); obj.quality=parseQDS(qdp); off+=2; const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 41: { const cv=readUInt32(bytes,off); off+=4; const scq=bytes[off++]; obj.value=String(cv)+(scq&0x20?' [进位]':''); obj.quality={raw:scq,ov:false,bl:false,sb:false,nt:false,iv:!!(scq&0x80)}; const t=parseCP56Time2a(bytes,off); off+=7; if(t) obj.timestamp=t.raw; break; }
+                        case 45: { const sco=bytes[off++]; const qu=(sco>>2)&0x1F; obj.value=`${sco&1?'合闸':'分闸'} QU=${qu} ${sco&0x80?'选择':'直接'}`; break; }
+                        case 46: { const dco=bytes[off++]; obj.value=`${['不确定','分闸','合闸','不确定'][dco&0x03]} ${dco&0x80?'选择':'直接'}`; break; }
+                        case 47: { const rco=bytes[off++]; obj.value=`${['不确定','降','升','不确定'][rco&0x03]} ${rco&0x80?'选择':'直接'}`; break; }
+                        case 48: { const nva=(readInt16(bytes,off)/32767).toFixed(5); off+=2; const qos=bytes[off++]; obj.value=`${nva} ${qos&0x80?'选择':'直接'}`; break; }
+                        case 49: { const sva=readInt16(bytes,off); off+=2; const qos=bytes[off++]; obj.value=`${sva} ${qos&0x80?'选择':'直接'}`; break; }
+                        case 50: { const fv=readFloat32(bytes,off).toFixed(4); off+=4; const qos=bytes[off++]; obj.value=`${fv} ${qos&0x80?'选择':'直接'}`; break; }
+                        case 51: { obj.value='0x'+readUInt32(bytes,off).toString(16).toUpperCase().padStart(8,'0'); off+=4; break; }
+                        case 70: { const coi=bytes[off++]; obj.value=[`当地电源合上`,'当地手动复位','远方复位'][(coi&0x7F)] || `COI=${coi&0x7F}`; obj.value+=` ${coi&0x80?'当地':'远方'}`; break; }
+                        case 100:{ const qoi=bytes[off++]; const qoiN={20:'站召唤',21:'1组',22:'2组',23:'3组',24:'4组',25:'5组',26:'6组',27:'7组',28:'8组',29:'9组',30:'10组',31:'11组',32:'12组',33:'13组',34:'14组',35:'15组',36:'16组'}; obj.value=qoiN[qoi]||`QOI=${qoi}`; break; }
+                        case 101:{ const qcc=bytes[off++]; obj.value=`RQT=${qcc&0x3F} ${['未冻结','冻结不复位','冻结并复位','复位'][(qcc>>6)&0x03]}`; break; }
+                        case 103:{ const t=parseCP56Time2a(bytes,off); off+=7; obj.value=t?t.raw:'时间解析失败'; break; }
+                        case 104:{ const fbp=bytes[off]|(bytes[off+1]<<8); off+=2; obj.value='FBP=0x'+fbp.toString(16).toUpperCase().padStart(4,'0'); break; }
+                        default: { obj.value=`[TypeID=${typeId} 待实现]`; off=bytes.length; break; }
+                    }
+                } catch(e) { obj.parseError = true; }
+                objects.push(obj);
+            }
+            return { objects, startIoa };
+        }
+
+        // ---- 主解析入口 ----
+        function parseAPDU(hexStr) {
+            try {
+                const bytes = hexStr.trim().split(/\s+/).map(h => parseInt(h, 16));
+                if (bytes.length < 6 || bytes[0] !== 0x68) return { frameType: 'ERROR' };
+                const c1 = bytes[2];
+                if ((c1 & 0x03) === 0x03) return { frameType: 'U', func: U_FRAME_FUNCS[c1] || `U-Frame(0x${c1.toString(16).toUpperCase()})` };
+                if ((c1 & 0x01) === 0x01) return { frameType: 'S', snr: (bytes[5]<<7)|(bytes[4]>>1) };
+                const sns = (bytes[3]<<7)|(bytes[2]>>1), snr = (bytes[5]<<7)|(bytes[4]>>1);
+                if (bytes.length < 12) return { frameType: 'I', sns, snr, asdu: null };
+                const typeId = bytes[6], sq = !!(bytes[7]&0x80), numObj = bytes[7]&0x7F;
+                const test = !!(bytes[8]&0x80), negative = !!(bytes[8]&0x40), cot = bytes[8]&0x3F;
+                const ca = bytes[10] | (bytes[11]<<8);
+                const typeName = ASDU_TYPE_NAMES[typeId] || `TypeID=${typeId}`;
+                const cotName  = COT_NAMES[cot] || `COT=${cot}`;
+                let asduExtra;
+                if (sq) {
+                    const startIoa = bytes.length >= 15 ? readIOA(bytes, 12) : 0;
+                    asduExtra = { sq: true, startIoa, numObj };
+                } else {
+                    const { objects } = parseASDUObjects(typeId, bytes, 12, false, numObj);
+                    asduExtra = { sq: false, objects, numObj };
+                }
+                return { frameType: 'I', sns, snr, asdu: { typeId, typeName, sq, numObj, cot, cotName, test, negative, ca, ...asduExtra } };
+            } catch(e) { return { frameType: 'ERROR' }; }
+        }
+
+        // ---- 品质标签工具 ----
+        function formatQds(q) {
+            if (!q) return '正常';
+            const bits = [];
+            if (q.iv) bits.push('无效'); if (q.nt) bits.push('非当前');
+            if (q.sb) bits.push('取代'); if (q.bl) bits.push('闭锁');
+            if (q.ov) bits.push('溢出');
+            return bits.length === 0 ? '正常' : bits.join('|');
+        }
+        function getQdsTagType(q) {
+            if (!q) return 'success';
+            if (q.iv) return 'danger';
+            if (q.nt || q.sb || q.bl) return 'warning';
+            if (q.ov) return 'warning';
+            return 'success';
+        }
+
+        // ---- 原始 Hex 格式化（每行 12 字节，APDU 头与 ASDU 之间加空格）----
+        function formatRawLines(hexStr) {
+            const bytes = hexStr.trim().split(/\s+/).filter(b => b.length > 0);
+            if (bytes.length === 0) return [hexStr];
+            const header = bytes.slice(0, 6).join(' ');
+            const body   = bytes.slice(6);
+            if (body.length === 0) return [header];
+            const lines = [header + '  ' + body.slice(0, 6).join(' ')];
+            for (let i = 6; i < body.length; i += 12) lines.push(body.slice(i, i+12).join(' '));
+            return lines;
+        }
+
+        // ---- 时间戳格式化 HH:mm:ss.SSS ----
+        function formatPacketTime(ts) {
+            const d = new Date(ts);
+            return [d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':')
+                + '.' + String(d.getMilliseconds()).padStart(3,'0');
+        }
+
         // IEC 60870-5-104 类型映射（与 IEC104Type.h 保持一致）
         const typeNames = {
             'M_SP_NA_1': { name: '单点遥信 (M_SP_NA_1)', code: 1 },
@@ -379,18 +708,48 @@
             setup() {
                 const stations = ref([]);
                 const pointsMap = shallowRef({});  // 使用 shallowRef 存储点位，key 为 station_id + ioa
-                const packets = ref([]);
-                const packetCache = ref([]);  // 缓存折叠时的报文
+
+                // 通信细节状态
+                const commPackets = ref([]);
+                const commViewMode = ref('parsed');    // 'parsed' | 'raw'
+                const commStationFilter = ref('');     // '' = 全部站点
+
+                // 过滤后的通信记录
+                const filteredCommPackets = computed(() => {
+                    if (!commStationFilter.value) return commPackets.value;
+                    return commPackets.value.filter(p => p.station_id === commStationFilter.value);
+                });
+
+                // ── 报文监视器虚拟滚动 ──────────────────────────────
+                const packetScrollTop = ref(0);
+                const PACKET_CONTAINER_H = 380;
+                const PACKET_EST_H = 82;   // 每条报文的估算高度（px）
+                const PACKET_BUFFER  = 4;  // 上下各预渲染 4 条
+
+                const packetVirtualItems = computed(() => {
+                    const all = filteredCommPackets.value;
+                    const total = all.length;
+                    if (total === 0) return { items: [], startIndex: 0, paddingTop: 0, paddingBottom: 0 };
+                    const H = PACKET_EST_H;
+                    const start = Math.max(0, Math.floor(packetScrollTop.value / H) - PACKET_BUFFER);
+                    const end   = Math.min(total, start + Math.ceil(PACKET_CONTAINER_H / H) + PACKET_BUFFER * 2);
+                    return {
+                        items:         all.slice(start, end),
+                        startIndex:    start,
+                        paddingTop:    start * H,
+                        paddingBottom: Math.max(0, (total - end) * H),
+                    };
+                });
+
+                function onPacketScroll(e) {
+                    packetScrollTop.value = e.target.scrollTop;
+                }
+                // ────────────────────────────────────────────────────
 
                 // 批量更新队列
                 const pendingUpdates = [];
                 let updateScheduled = false;
                 let updateRafId = null;
-
-                // 报文监控是否展开
-                const isPacketMonitorOpen = computed(() => {
-                    return activeCollapse.value.includes('packets');
-                });
 
                 // 从站搜索和筛选
                 const stationSearchText = ref('');
@@ -707,16 +1066,12 @@
 
                 const activeCollapse = ref([]);
 
-                // 监听报文监控展开状态，展开时加载缓存
+                // 展开通信细节时自动滚动到底部
                 watch(activeCollapse, (newVal) => {
-                    if (newVal.includes('packets') && packetCache.value.length > 0) {
-                        // 展开时将缓存的报文复制到显示数组
-                        packets.value = [...packetCache.value];
+                    if (newVal.includes('packets')) {
                         nextTick(() => {
                             const monitor = document.getElementById('packetMonitor');
-                            if (monitor) {
-                                monitor.scrollTop = monitor.scrollHeight;
-                            }
+                            if (monitor) monitor.scrollTop = monitor.scrollHeight;
                         });
                     }
                 }, { deep: true });
@@ -874,27 +1229,30 @@
                             }
                             console.log('[JS] Control result received:', msg.data);
                             break;
-                        case 'packet':
-                            // 折叠时不处理DOM，只缓存
-                            if (isPacketMonitorOpen.value) {
-                                packets.value.push(msg.data);
-                                if (packets.value.length > 500) {
-                                    packets.value.shift();
-                                }
+                        case 'packet': {
+                            const rawHex = (msg.data.data || '').toUpperCase();
+                            const byteArr = rawHex.trim().split(/\s+/).filter(b => b.length > 0);
+                            const ts = Date.now();
+                            const pkt = {
+                                sent:        msg.data.sent,
+                                station_id:  msg.station_id,
+                                rawHex:      rawHex,
+                                byteCount:   byteArr.length,
+                                timestamp:   ts,
+                                displayTime: formatPacketTime(ts),
+                                rawLines:    formatRawLines(rawHex),
+                                parsed:      parseAPDU(rawHex),
+                            };
+                            commPackets.value.push(pkt);
+                            if (commPackets.value.length > 500) commPackets.value.shift();
+                            if (activeCollapse.value.includes('packets')) {
                                 nextTick(() => {
                                     const monitor = document.getElementById('packetMonitor');
-                                    if (monitor) {
-                                        monitor.scrollTop = monitor.scrollHeight;
-                                    }
+                                    if (monitor) monitor.scrollTop = monitor.scrollHeight;
                                 });
-                            } else {
-                                // 折叠状态：只缓存，不渲染
-                                packetCache.value.push(msg.data);
-                                if (packetCache.value.length > 500) {
-                                    packetCache.value.shift();
-                                }
                             }
                             break;
+                        }
                     }
                 }
 
@@ -1016,7 +1374,7 @@
                 }
 
                 function clearPackets() {
-                    packets.value = [];
+                    commPackets.value = [];
                 }
 
                 onMounted(() => {
@@ -1067,7 +1425,13 @@
                     handleSearchInput,
                     filterType,
                     filterQuality,
-                    packets,
+                    // 通信细节
+                    commPackets,
+                    commViewMode,
+                    commStationFilter,
+                    filteredCommPackets,
+                    formatQds,
+                    getQdsTagType,
                     activeCollapse,
                     showAddDialog,
                     showControlDialog,
@@ -1093,7 +1457,9 @@
                     STATION_PAGE_SIZE,
                     getStationPage,
                     getPagedPoints,
-                    handleStationPageChange
+                    handleStationPageChange,
+                    packetVirtualItems,
+                    onPacketScroll,
                 };
             }
         });
