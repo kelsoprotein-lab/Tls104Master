@@ -5,21 +5,16 @@
 
 #include "server.h"
 #include "../platform/socket.h"
+#include "embedded_web.h"
 #include <iostream>
-#include <fstream>
 #include <sstream>
 #include <algorithm>
-
-#ifdef _WIN32
-    #include <filesystem>
-#else
-    #include <sys/stat.h>
-#endif
+#include <cstring>
 
 namespace tls104 {
 
 HttpServer::HttpServer(int port)
-    : port_(port), serverFd_(0), running_(false), documentRoot_("./web"), apiHandler_(nullptr) {
+    : port_(port), serverFd_(static_cast<SocketType>(0)), running_(false), apiHandler_(nullptr) {
 }
 
 HttpServer::~HttpServer() {
@@ -58,14 +53,14 @@ bool HttpServer::start() {
     if (bind(serverFd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         std::cerr << "[HTTP] Failed to bind to port " << port_ << std::endl;
         socketClose(serverFd_);
-        serverFd_ = 0;
+        serverFd_ = static_cast<SocketType>(0);
         return false;
     }
 
     if (listen(serverFd_, 5) < 0) {
         std::cerr << "[HTTP] Failed to listen" << std::endl;
         socketClose(serverFd_);
-        serverFd_ = 0;
+        serverFd_ = static_cast<SocketType>(0);
         return false;
     }
 
@@ -81,10 +76,19 @@ void HttpServer::stop() {
 
     running_ = false;
 
+    // Wake up all SSE clients so their threads can exit
+    {
+        std::lock_guard<std::mutex> lock(sseClientsMutex_);
+        for (auto& client : sseClients_) {
+            client->alive = false;
+            client->cv.notify_all();
+        }
+    }
+
     // Close server socket to unblock accept
     if (socketIsValid(serverFd_)) {
         socketClose(serverFd_);
-        serverFd_ = 0;
+        serverFd_ = static_cast<SocketType>(0);
     }
 
     if (acceptThread_.joinable()) {
@@ -92,17 +96,19 @@ void HttpServer::stop() {
     }
 }
 
-void HttpServer::setDocumentRoot(const std::string& root) {
-    documentRoot_ = root;
-}
-
 void HttpServer::setAPIHandler(HttpHandler handler) {
     apiHandler_ = handler;
 }
 
 void HttpServer::broadcast(const std::string& json) {
-    std::lock_guard<std::mutex> lock(queueMutex_);
-    messageQueue_.push(json);
+    std::lock_guard<std::mutex> lock(sseClientsMutex_);
+    for (auto& client : sseClients_) {
+        if (client->alive) {
+            std::lock_guard<std::mutex> cLock(client->mutex);
+            client->queue.push(json);
+            client->cv.notify_one();
+        }
+    }
 }
 
 void HttpServer::acceptLoop() {
@@ -123,7 +129,7 @@ void HttpServer::acceptLoop() {
     }
 }
 
-void HttpServer::handleClient(int clientFd) {
+void HttpServer::handleClient(SocketType clientFd) {
     // Read request
     char buffer[4096] = {0};
     int n = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
@@ -154,64 +160,90 @@ void HttpServer::handleClient(int clientFd) {
     if (path.find("/api/") == 0 && apiHandler_) {
         response = handleAPI(path, method, body);
     } else if (path == "/events") {
-        // Server-Sent Events endpoint
-        std::string responseBody = "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/event-stream\r\n"
-            "Cache-Control: no-cache\r\n"
-            "Connection: keep-alive\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "\r\n";
-
-        send(clientFd, responseBody.c_str(), responseBody.size(), 0);
-
-        // Keep connection open and send events
-        time_t lastCheck = time(nullptr);
-        while (running_) {
-            // Check for new messages every second
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-
-            std::lock_guard<std::mutex> lock(queueMutex_);
-            while (!messageQueue_.empty()) {
-                std::string msg = "data: " + messageQueue_.front() + "\r\n\r\n";
-                messageQueue_.pop();
-                send(clientFd, msg.c_str(), msg.size(), 0);
-            }
-        }
+        handleSSE(clientFd);
         return;
+    } else if (path == "/index.html") {
+        // Serve embedded index.html from compiled-in byte array
+        std::ostringstream resp;
+        resp << "HTTP/1.1 200 OK\r\n";
+        resp << "Content-Type: text/html\r\n";
+        resp << "Content-Length: " << embedded_index_html_size << "\r\n";
+        resp << "Access-Control-Allow-Origin: *\r\n";
+        resp << "Connection: close\r\n";
+        resp << "\r\n";
+        resp.write(reinterpret_cast<const char*>(embedded_index_html), embedded_index_html_size);
+        response = resp.str();
     } else {
-        // Static file
-        std::string fullPath = documentRoot_ + path;
-        std::string content = readFile(fullPath);
-
-        std::string contentType = getContentType(path);
-
-        if (!content.empty()) {
-            std::ostringstream resp;
-            resp << "HTTP/1.1 200 OK\r\n";
-            resp << "Content-Type: " << contentType << "\r\n";
-            resp << "Content-Length: " << content.size() << "\r\n";
-            resp << "Access-Control-Allow-Origin: *\r\n";
-            resp << "Connection: close\r\n";
-            resp << "\r\n";
-            resp << content;
-            response = resp.str();
-        } else {
-            std::string notFound = "<html><body><h1>404 Not Found</h1></body></html>";
-            std::ostringstream resp;
-            resp << "HTTP/1.1 404 Not Found\r\n";
-            resp << "Content-Type: text/html\r\n";
-            resp << "Content-Length: " << notFound.size() << "\r\n";
-            resp << "Access-Control-Allow-Origin: *\r\n";
-            resp << "Connection: close\r\n";
-            resp << "\r\n";
-            resp << notFound;
-            response = resp.str();
-        }
+        std::string notFound = "<html><body><h1>404 Not Found</h1></body></html>";
+        std::ostringstream resp;
+        resp << "HTTP/1.1 404 Not Found\r\n";
+        resp << "Content-Type: text/html\r\n";
+        resp << "Content-Length: " << notFound.size() << "\r\n";
+        resp << "Access-Control-Allow-Origin: *\r\n";
+        resp << "Connection: close\r\n";
+        resp << "\r\n";
+        resp << notFound;
+        response = resp.str();
     }
 
     if (!response.empty()) {
-        send(clientFd, response.c_str(), response.size(), 0);
+        send(clientFd, response.c_str(), static_cast<int>(response.size()), 0);
     }
+}
+
+void HttpServer::handleSSE(SocketType clientFd) {
+    // Send SSE headers
+    std::string header = "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: keep-alive\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "\r\n";
+    send(clientFd, header.c_str(), static_cast<int>(header.size()), 0);
+
+    // Register this client with its own queue
+    auto client = std::make_shared<SSEClient>();
+    {
+        std::lock_guard<std::mutex> lock(sseClientsMutex_);
+        sseClients_.push_back(client);
+    }
+
+    // Event loop: wait for messages, send to this client
+    while (running_ && client->alive) {
+        std::vector<std::string> msgs;
+        {
+            std::unique_lock<std::mutex> lock(client->mutex);
+            client->cv.wait_for(lock, std::chrono::seconds(15), [&]() {
+                return !client->queue.empty() || !running_ || !client->alive;
+            });
+            while (!client->queue.empty()) {
+                msgs.push_back(client->queue.front());
+                client->queue.pop();
+            }
+        }
+
+        if (msgs.empty()) {
+            // Send SSE comment as heartbeat to detect dead connections
+            const char* heartbeat = ":heartbeat\r\n\r\n";
+            int sent = send(clientFd, heartbeat, static_cast<int>(strlen(heartbeat)), 0);
+            if (sent <= 0) break;
+            continue;
+        }
+
+        for (const auto& m : msgs) {
+            std::string frame = "data: " + m + "\r\n\r\n";
+            int sent = send(clientFd, frame.c_str(), static_cast<int>(frame.size()), 0);
+            if (sent <= 0) goto cleanup;
+        }
+    }
+
+cleanup:
+    // Remove this client from the list
+    client->alive = false;
+    std::lock_guard<std::mutex> lock(sseClientsMutex_);
+    sseClients_.erase(
+        std::remove(sseClients_.begin(), sseClients_.end(), client),
+        sseClients_.end());
 }
 
 std::string HttpServer::handleAPI(const std::string& path, const std::string& method, const std::string& body) {
@@ -226,38 +258,6 @@ std::string HttpServer::handleAPI(const std::string& path, const std::string& me
            "Access-Control-Allow-Origin: *\r\n"
            "\r\n"
            "{}";
-}
-
-std::string HttpServer::readFile(const std::string& path) const {
-    // Try different path formats
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        // Try with backslash
-        std::string altPath = path;
-        std::replace(altPath.begin(), altPath.end(), '/', '\\');
-        file.open(altPath, std::ios::binary);
-        if (!file) {
-            std::cerr << "[HTTP] Failed to open: " << path << " or " << altPath << std::endl;
-            return "";
-        }
-    }
-
-    // Get file size
-    file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    std::cerr << "[HTTP] File size: " << size << std::endl;
-
-    std::string content(size, '\0');
-    file.read(&content[0], size);
-
-    if (!file) {
-        std::cerr << "[HTTP] Failed to read file" << std::endl;
-        return "";
-    }
-
-    return content;
 }
 
 std::string HttpServer::getContentType(const std::string& path) const {

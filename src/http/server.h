@@ -13,11 +13,11 @@
 #include <mutex>
 #include <map>
 #include <queue>
+#include <vector>
+#include <memory>
+#include <condition_variable>
 
-#ifdef _WIN32
-    #define WIN32_LEAN_AND_MEAN
-    #include <winsock2.h>
-#endif
+#include "../platform/socket.h"
 
 namespace tls104 {
 
@@ -79,12 +79,6 @@ public:
     void stop();
 
     /**
-     * @brief Set document root directory
-     * @param root Path to web files
-     */
-    void setDocumentRoot(const std::string& root);
-
-    /**
      * @brief Set API handler
      * @param handler Callback for API requests
      */
@@ -108,14 +102,13 @@ public:
 
 private:
     void acceptLoop();
-    void handleClient(int clientFd);
-    std::string readFile(const std::string& path) const;
+    void handleClient(SocketType clientFd);
+    void handleSSE(SocketType clientFd);
     std::string getContentType(const std::string& path) const;
     std::string handleAPI(const std::string& path, const std::string& method, const std::string& body);
 
     int port_;
-    std::string documentRoot_;
-    int serverFd_;
+    SocketType serverFd_;
     std::atomic<bool> running_;
     std::thread acceptThread_;
     std::mutex mutex_;
@@ -123,9 +116,15 @@ private:
     // API handler
     HttpHandler apiHandler_;
 
-    // Broadcast queue for SSE
-    std::queue<std::string> messageQueue_;
-    std::mutex queueMutex_;
+    // Per-client SSE queues
+    struct SSEClient {
+        std::queue<std::string> queue;
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::atomic<bool> alive{true};
+    };
+    std::vector<std::shared_ptr<SSEClient>> sseClients_;
+    std::mutex sseClientsMutex_;
 };
 
 } // namespace tls104
