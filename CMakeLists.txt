@@ -126,14 +126,23 @@ endif()
 # Force TLS support
 target_compile_definitions(tls104_master_win PRIVATE LIB60870_HAS_TLS_SUPPORT=1)
 
-# Copy web files to build directory
-if(WIN32)
-    add_custom_command(TARGET tls104_master_win POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/web
-        $<TARGET_FILE_DIR:tls104_master_win>/web
-    )
-endif()
+# Embed web/index.html into the executable as a C byte array
+set(EMBEDDED_WEB_DIR ${CMAKE_BINARY_DIR}/generated)
+set(EMBEDDED_WEB_HEADER ${EMBEDDED_WEB_DIR}/embedded_web.h)
+file(MAKE_DIRECTORY ${EMBEDDED_WEB_DIR})
+add_custom_command(
+    OUTPUT ${EMBEDDED_WEB_HEADER}
+    COMMAND ${CMAKE_COMMAND}
+        -DINPUT_FILE=${CMAKE_SOURCE_DIR}/web/index.html
+        -DOUTPUT_FILE=${EMBEDDED_WEB_HEADER}
+        -DVAR_NAME=embedded_index_html
+        -P ${CMAKE_SOURCE_DIR}/cmake/embed_resource.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/web/index.html
+    COMMENT "Embedding web/index.html into executable..."
+)
+add_custom_target(embedded_web DEPENDS ${EMBEDDED_WEB_HEADER})
+add_dependencies(tls104_master_win embedded_web)
+target_include_directories(tls104_master_win PRIVATE ${EMBEDDED_WEB_DIR})
 
 # Install
 install(TARGETS tls104_master_win DESTINATION bin)
