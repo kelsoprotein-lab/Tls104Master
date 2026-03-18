@@ -662,34 +662,43 @@
 
         // IEC 60870-5-104 类型映射（与 IEC104Type.h 保持一致）
         const typeNames = {
-            'M_SP_NA_1': { name: '单点遥信 (M_SP_NA_1)', code: 1 },
-            'M_DP_NA_1': { name: '双点遥信 (M_DP_NA_1)', code: 3 },
-            'M_ME_NA_1': { name: '规一化值 (M_ME_NA_1)', code: 9 },
-            'M_ME_NB_1': { name: '标度化值 (M_ME_NB_1)', code: 11 },
-            'M_ME_NC_1': { name: '短浮点数 (M_ME_NC_1)', code: 13 },
-            'M_SP_TB_1': { name: '带时标单点遥信 (M_SP_TB_1)', code: 30 },
-            'M_DP_TB_1': { name: '带时标双点遥信 (M_DP_TB_1)', code: 31 },
-            'M_ME_TD_1': { name: '带时标规一化值 (M_ME_TD_1)', code: 34 },
-            'M_ME_TE_1': { name: '带时标标度化值 (M_ME_TE_1)', code: 35 },
-            'M_ME_TF_1': { name: '带时标短浮点数 (M_ME_TF_1)', code: 36 },
+            'M_SP_NA_1': { name: '单点遥信', code: 1 },
+            'M_SP_TA_1': { name: '带短时标单点遥信', code: 2 },
+            'M_DP_NA_1': { name: '双点遥信', code: 3 },
+            'M_DP_TA_1': { name: '带短时标双点遥信', code: 4 },
+            'M_ME_NA_1': { name: '规一化值', code: 9 },
+            'M_ME_TA_1': { name: '带短时标规一化值', code: 10 },
+            'M_ME_NB_1': { name: '标度化值', code: 11 },
+            'M_ME_TB_1': { name: '带短时标标度化值', code: 12 },
+            'M_ME_NC_1': { name: '短浮点数', code: 13 },
+            'M_ME_TC_1': { name: '带短时标短浮点数', code: 14 },
+            'M_IT_NA_1': { name: '累积量', code: 15 },
+            'M_ME_ND_1': { name: '不带品质规一化值', code: 21 },
+            'M_SP_TB_1': { name: '带长时标单点遥信', code: 30 },
+            'M_DP_TB_1': { name: '带长时标双点遥信', code: 31 },
+            'M_ME_TD_1': { name: '带长时标规一化值', code: 34 },
+            'M_ME_TE_1': { name: '带长时标标度化值', code: 35 },
+            'M_ME_TF_1': { name: '带长时标短浮点数', code: 36 },
+            'M_IT_TB_1': { name: '带长时标累积量', code: 37 },
         };
 
         // 获取类型显示名称
         function getTypeName(type) {
             const info = typeNames[type];
             if (info) {
-                return `${info.name} (${info.code})`;
+                return `${info.name} (${type})`;
             }
             return type;
         }
 
         // 格式化遥测值
         function formatTelemetryValue(value, type) {
-            if (type === 'M_ME_NC_1' || type === 'M_ME_TF_1') {
+            if (type === 'M_ME_NC_1' || type === 'M_ME_TC_1' || type === 'M_ME_TF_1') {
                 return value.toFixed(2);
-            } else if (type === 'M_ME_NA_1' || type === 'M_ME_TD_1') {
-                // 归一化值转换为百分比
+            } else if (type === 'M_ME_NA_1' || type === 'M_ME_TA_1' || type === 'M_ME_TD_1' || type === 'M_ME_ND_1') {
                 return (value / 327.67).toFixed(2);
+            } else if (type === 'M_ME_NB_1' || type === 'M_ME_TB_1' || type === 'M_ME_TE_1') {
+                return value.toString();
             }
             return value.toString();
         }
@@ -712,7 +721,7 @@
         }
 
         // 遥信类型列表
-        const digitalTypes = ['M_SP_NA_1', 'M_DP_NA_1', 'M_SP_TB_1', 'M_DP_TB_1'];
+        const digitalTypes = ['M_SP_NA_1', 'M_SP_TA_1', 'M_DP_NA_1', 'M_DP_TA_1', 'M_SP_TB_1', 'M_DP_TB_1'];
 
         // 点位数量限制常量
         const MAX_POINTS = 5000; // 最大保留点位数
@@ -995,11 +1004,9 @@
                     return Object.values(pointsMap.value);
                 });
 
-                // 所有类型列表
+                // 所有类型列表（静态列出所有已知 IEC 104 类型，按 code 排序）
                 const allTypes = computed(() => {
-                    const types = new Set();
-                    Object.values(pointsMap.value).forEach(p => types.add(p.type));
-                    return Array.from(types).sort();
+                    return Object.keys(typeNames).sort((a, b) => typeNames[a].code - typeNames[b].code);
                 });
 
                 // 分页状态
