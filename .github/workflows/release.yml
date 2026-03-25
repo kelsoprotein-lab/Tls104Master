@@ -54,15 +54,15 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cmake --build . --config Release --parallel
-          ls -la Release/ 2>/dev/null || dir Release
+          cmake --build build --config Release --parallel
+          ls -la build/Release/ 2>/dev/null || dir build\\Release
 
       - name: Package
         shell: bash
         run: |
           mkdir -p dist
-          cp Release/tls104_master_win.exe dist/ 2>/dev/null || echo "Exe not found in Release/"
-          cp -r ../certs dist/ 2>/dev/null || echo "certs not copied"
+          cp build/Release/tls104_master_win.exe dist/ 2>/dev/null || echo "Exe not found"
+          cp -r certs dist/ 2>/dev/null || echo "certs not copied"
           ls -la dist/ || dir dist
           cd dist
           powershell -Command "Compress-Archive -Path '*' -DestinationPath '../tls104_master_win-windows.zip' -Force"
