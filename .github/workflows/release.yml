@@ -54,22 +54,16 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cmake --build build --config Release --parallel
+          cmake --build . --config Release --parallel
+          ls -la Release/ 2>/dev/null || dir Release
 
       - name: Package
         shell: bash
         run: |
-          cd build
           mkdir -p dist
-          # Find the exe in build output
-          find . -name "*.exe" -type f 2>/dev/null
-          # Try to copy exe
-          cp build/Release/tls104_master_win.exe dist/ 2>/dev/null || \
-          cp build/Debug/tls104_master_win.exe dist/ 2>/dev/null || \
-          cp build/tls104_master_win.exe dist/ 2>/dev/null || \
-          echo "Exe not found"
+          cp Release/tls104_master_win.exe dist/ 2>/dev/null || echo "Exe not found in Release/"
+          cp -r ../certs dist/ 2>/dev/null || echo "certs not copied"
           ls -la dist/ || dir dist
-          # Package
           cd dist
           powershell -Command "Compress-Archive -Path '*' -DestinationPath '../tls104_master_win-windows.zip' -Force"
           ls -la ../tls104_master_win-windows.zip || dir ../tls104_master_win-windows.zip
