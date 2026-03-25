@@ -31,6 +31,7 @@ set(BUILD_HAL ON CACHE BOOL "Build HAL" FORCE)
 set(BUILD_COMMON ON CACHE BOOL "Build common code" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 
 # Download lib60870 (populate only, build after mbedtls setup)
 include(FetchContent)
