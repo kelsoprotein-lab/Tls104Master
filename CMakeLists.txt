@@ -13,9 +13,11 @@ if(WIN32)
     add_definitions(-DNOMINMAX)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4")
-    # Use static CRT library for standalone executable
+    # Use static CRT library for standalone executable (both C and C++)
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /MT")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /MTd")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 endif()
@@ -31,6 +33,9 @@ set(BUILD_HAL ON CACHE BOOL "Build HAL" FORCE)
 set(BUILD_COMMON ON CACHE BOOL "Build common code" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
+# NOTE: lib60870 uses explicit SHARED/STATIC keywords, so this alone does not
+# prevent its shared library from being built. See the post-add_subdirectory
+# patch below for the actual fix on Windows.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 
 # Download lib60870 (populate only, build after mbedtls setup)
@@ -92,6 +97,18 @@ endif()
 
 add_subdirectory(${lib60870_SOURCE_DIR}/lib60870-C ${CMAKE_BINARY_DIR}/lib60870-C-build)
 
+# Windows fix: lib60870 always builds both shared and static targets.
+# On MSVC both produce lib60870.lib (import lib vs static lib), causing a
+# naming conflict. The import lib overwrites the static lib, so the exe ends
+# up requiring lib60870.dll at runtime. Fix: exclude the shared target from
+# the default build and rename its output to avoid the .lib collision.
+if(WIN32 AND TARGET lib60870-shared)
+    set_target_properties(lib60870-shared PROPERTIES
+        EXCLUDE_FROM_ALL TRUE
+        OUTPUT_NAME lib60870_shared
+    )
+endif()
+
 # Optional: webview for native GUI window
 if(ENABLE_WEBVIEW_GUI)
     FetchContent_Declare(
@@ -145,7 +162,9 @@ target_link_libraries(tls104_master_win PRIVATE
 
 # Windows-specific libraries
 if(WIN32)
-    target_link_options(tls104_master_win PRIVATE -static)
+    if(NOT MSVC)
+        target_link_options(tls104_master_win PRIVATE -static)
+    endif()
     target_link_libraries(tls104_master_win PRIVATE ws2_32)
     target_compile_definitions(tls104_master_win PRIVATE _WIN32=1)
 else()
