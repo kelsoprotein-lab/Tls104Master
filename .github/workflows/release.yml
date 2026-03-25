@@ -29,6 +29,7 @@ jobs:
           cp tls104_master_win dist/
           cp -r ../certs dist/
           tar -czf ../tls104_master_win-macos.tar.gz -C dist .
+          ls -la ../tls104_master_win-macos.tar.gz
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -60,17 +61,24 @@ jobs:
         run: |
           cd build
           mkdir -p dist
-          cp build/Release/tls104_master_win.exe dist/ 2>/dev/null || cp build/tls104_master_win.exe dist/ 2>/dev/null || true
-          ls -la dist/ || dir dist/
-          cp -r ../certs dist/ 2>/dev/null || true
+          # Find the exe in build output
+          find . -name "*.exe" -type f 2>/dev/null
+          # Try to copy exe
+          cp build/Release/tls104_master_win.exe dist/ 2>/dev/null || \
+          cp build/Debug/tls104_master_win.exe dist/ 2>/dev/null || \
+          cp build/tls104_master_win.exe dist/ 2>/dev/null || \
+          echo "Exe not found"
+          ls -la dist/ || dir dist
+          # Package
+          cd dist
+          powershell -Command "Compress-Archive -Path '*' -DestinationPath '../tls104_master_win-windows.zip' -Force"
+          ls -la ../tls104_master_win-windows.zip || dir ../tls104_master_win-windows.zip
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: tls104_master_win-windows
-          path: |
-            build/dist/tls104_master_win.exe
-            build/dist/certs/*
+          path: tls104_master_win-windows.zip
           retention-days: 5
 
   release:
@@ -86,6 +94,10 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: List Artifacts
+        run: |
+          ls -la artifacts/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -93,7 +105,7 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            tls104_master_win-macos.tar.gz
-            tls104_master_win-windows.zip
+            artifacts/tls104_master_win-macos.tar.gz
+            artifacts/tls104_master_win-windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
