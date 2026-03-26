@@ -171,6 +171,28 @@ void IPCBridge::handleMessage(const std::string& json) {
             callback_->onRemoveStation(id);
         }
     }
+    else if (type == "connect_station" && callback_) {
+        // Extract station_id
+        size_t idPos = dataStr.find("\"station_id\"");
+        if (idPos != std::string::npos) {
+            size_t iCol = dataStr.find(":", idPos);
+            size_t iQ1 = dataStr.find("\"", iCol);
+            size_t iQ2 = dataStr.find("\"", iQ1 + 1);
+            std::string id = dataStr.substr(iQ1 + 1, iQ2 - iQ1 - 1);
+            callback_->onConnectStation(id);
+        }
+    }
+    else if (type == "disconnect_station" && callback_) {
+        // Extract station_id
+        size_t idPos = dataStr.find("\"station_id\"");
+        if (idPos != std::string::npos) {
+            size_t iCol = dataStr.find(":", idPos);
+            size_t iQ1 = dataStr.find("\"", iCol);
+            size_t iQ2 = dataStr.find("\"", iQ1 + 1);
+            std::string id = dataStr.substr(iQ1 + 1, iQ2 - iQ1 - 1);
+            callback_->onDisconnectStation(id);
+        }
+    }
     else if (type == "interrogation" && callback_) {
         // station_id from URL or data
         callback_->onSendInterrogation("", 1); // TODO: parse properly

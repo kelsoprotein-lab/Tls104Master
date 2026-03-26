@@ -625,6 +625,9 @@ void IEC104ConnectionManager::connectionHandler(void* param, CS104_Connection co
 
         case CS104_CONNECTION_CLOSED:
             std::cout << "[IEC104] Connection closed: " << stationId << std::endl;
+            // 清理连接状态
+            info->connection = nullptr;
+            info->status = ConnectionStatus::DISCONNECTED;
             if (self->connectionCallback_) {
                 self->connectionCallback_(stationId, ConnectionStatus::DISCONNECTED, "Disconnected");
             }
