@@ -1221,7 +1221,7 @@
 
                 function handleMessage(msg) {
                     // 使用批量更新队列处理遥测和遥信数据
-                    if (msg.type === 'telemetry' || msg.type === 'digital') {
+                    if (msg.type === 'telemetry' || msg.type === 'digital' || msg.type === 'counter') {
                         pendingUpdates.push(msg);
                         scheduleUpdate();
                         return;
