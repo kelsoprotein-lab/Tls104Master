@@ -187,7 +187,7 @@ public:
 private:
     CS104_Connection createConnection(IEC104ConnectionInfo& info);
     void connectThreadFunc(const std::string& stationId, IEC104ConnectionInfo* info);
-    void reconnectThreadFunc(const std::string& stationId, IEC104ConnectionInfo* info);
+    void reconnectThreadFunc(const std::string& stationId, IEC104ConnectionInfo* info, int maxRetries = 10);
 
     // lib60870 callbacks
     static bool asduReceivedHandler(void* param, int size, CS101_ASDU asdu);

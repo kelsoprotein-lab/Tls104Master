@@ -44,6 +44,7 @@ static std::unique_ptr<IEC104ConnectionManager> g_iec104;
 
 // Station data storage (for API)
 static std::map<std::string, StationData> g_stations;
+static std::mutex g_stationsMutex;
 
 // Signal handler
 void signalHandler(int signal) {
@@ -66,7 +67,10 @@ public:
         sd.port = config.port;
         sd.status = "connecting";
         sd.use_tls = config.useTLS;
-        tls104::g_stations[config.id] = sd;
+        {
+            std::lock_guard<std::mutex> lock(tls104::g_stationsMutex);
+            tls104::g_stations[config.id] = sd;
+        }
 
         if (tls104::g_iec104) {
             tls104::g_iec104->addStation(config);
@@ -75,7 +79,10 @@ public:
 
     void onRemoveStation(const std::string& stationId) override {
         std::cout << "[Main] Removing station: " << stationId << std::endl;
-        tls104::g_stations.erase(stationId);
+        {
+            std::lock_guard<std::mutex> lock(tls104::g_stationsMutex);
+            tls104::g_stations.erase(stationId);
+        }
 
         if (tls104::g_iec104) {
             tls104::g_iec104->removeStation(stationId);
@@ -135,6 +142,7 @@ std::string handleAPIRequest(const std::string& path, const std::string& method,
 
     // GET /api/stations - list all stations
     if (method == "GET" && path == "/api/stations") {
+        std::lock_guard<std::mutex> lock(g_stationsMutex);
         std::ostringstream resp;
         resp << "{\"code\":0,\"data\":[";
         bool first = true;
@@ -466,6 +474,9 @@ int main(int argc, char* argv[]) {
     // Signal handling
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN);  // Ignore SIGPIPE to prevent process death on broken socket write
+#endif
 
     // Parse arguments
     int httpPort = 19876;
@@ -522,9 +533,12 @@ int main(int argc, char* argv[]) {
         }
 
         // Update station status
-        auto it = g_stations.find(stationId);
-        if (it != g_stations.end()) {
-            it->second.status = statusStr;
+        {
+            std::lock_guard<std::mutex> lock(g_stationsMutex);
+            auto it = g_stations.find(stationId);
+            if (it != g_stations.end()) {
+                it->second.status = statusStr;
+            }
         }
 
         // Broadcast to all clients

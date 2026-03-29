@@ -120,58 +120,77 @@ bool IEC104ConnectionManager::addStation(const StationConfig& config) {
 }
 
 bool IEC104ConnectionManager::removeStation(const std::string& stationId) {
-    std::lock_guard<std::mutex> lock(connectionsMutex_);
+    CS104_Connection oldConn = nullptr;
+    TLSConfiguration oldTls = nullptr;
 
-    auto it = connections_.find(stationId);
-    if (it == connections_.end()) {
-        std::cerr << "[IEC104] Station not found: " << stationId << std::endl;
-        return false;
-    }
+    {
+        std::lock_guard<std::mutex> lock(connectionsMutex_);
 
-    auto& info = it->second;
-    if (info) {
-        info->shouldReconnect = false;
-
-        if (info->connection) {
-            CS104_Connection_destroy(info->connection);
-            info->connection = nullptr;
+        auto it = connections_.find(stationId);
+        if (it == connections_.end()) {
+            std::cerr << "[IEC104] Station not found: " << stationId << std::endl;
+            return false;
         }
 
-        if (info->tlsConfig) {
-            TLSConfiguration_destroy(info->tlsConfig);
+        auto& info = it->second;
+        if (info) {
+            info->shouldReconnect = false;
+
+            oldConn = info->connection;
+            info->connection = nullptr;
+
+            oldTls = info->tlsConfig;
             info->tlsConfig = nullptr;
         }
+
+        connections_.erase(it);
     }
 
-    connections_.erase(it);
+    // Destroy outside lock to avoid deadlock
+    if (oldConn) {
+        CS104_Connection_destroy(oldConn);
+    }
+    if (oldTls) {
+        TLSConfiguration_destroy(oldTls);
+    }
+
     std::cout << "[IEC104] Removed station: " << stationId << std::endl;
     return true;
 }
 
 bool IEC104ConnectionManager::disconnectStation(const std::string& stationId) {
-    std::lock_guard<std::mutex> lock(connectionsMutex_);
+    CS104_Connection oldConn = nullptr;
+    TLSConfiguration oldTls = nullptr;
 
-    auto it = connections_.find(stationId);
-    if (it == connections_.end()) {
-        std::cerr << "[IEC104] Station not found: " << stationId << std::endl;
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(connectionsMutex_);
+
+        auto it = connections_.find(stationId);
+        if (it == connections_.end()) {
+            std::cerr << "[IEC104] Station not found: " << stationId << std::endl;
+            return false;
+        }
+
+        auto& info = it->second;
+        if (info) {
+            info->shouldReconnect = false;
+
+            oldConn = info->connection;
+            info->connection = nullptr;
+
+            oldTls = info->tlsConfig;
+            info->tlsConfig = nullptr;
+
+            info->status = ConnectionStatus::DISCONNECTED;
+        }
     }
 
-    auto& info = it->second;
-    if (info) {
-        info->shouldReconnect = false;
-
-        if (info->connection) {
-            CS104_Connection_destroy(info->connection);
-            info->connection = nullptr;
-        }
-
-        if (info->tlsConfig) {
-            TLSConfiguration_destroy(info->tlsConfig);
-            info->tlsConfig = nullptr;
-        }
-
-        info->status = ConnectionStatus::DISCONNECTED;
+    // Destroy outside lock to avoid deadlock (destroy may trigger connectionHandler callback)
+    if (oldConn) {
+        CS104_Connection_destroy(oldConn);
+    }
+    if (oldTls) {
+        TLSConfiguration_destroy(oldTls);
     }
 
     std::cout << "[IEC104] Disconnected station: " << stationId << std::endl;
@@ -247,21 +266,12 @@ void IEC104ConnectionManager::connectThreadFunc(const std::string& stationId, IE
             connectionCallback_(stationId, ConnectionStatus::CONN_ERROR, "Connection failed");
         }
 
-        // Start reconnect thread
+        // Start reconnect thread (initial connection: max 10 retries)
         if (info->shouldReconnect) {
-            if (!info->reconnectMutex) info->reconnectMutex = std::make_unique<std::mutex>();
-            std::lock_guard<std::mutex> lock(*info->reconnectMutex);
-            if (!info->reconnectThreadRunning) {
-                info->reconnectThreadRunning = true;
-                std::thread t([this, stationId, info]() {
-                    reconnectThreadFunc(stationId, info);
-                    if (info->reconnectMutex) {
-                        std::lock_guard<std::mutex> lock(*info->reconnectMutex);
-                        info->reconnectThreadRunning = false;
-                    }
-                });
-                t.detach();
-            }
+            std::thread t([this, stationId, info]() {
+                reconnectThreadFunc(stationId, info, 10);
+            });
+            t.detach();
         }
         return;
     }
@@ -277,41 +287,61 @@ void IEC104ConnectionManager::connectThreadFunc(const std::string& stationId, IE
     }
 }
 
-void IEC104ConnectionManager::reconnectThreadFunc(const std::string& stationId, IEC104ConnectionInfo* info) {
+void IEC104ConnectionManager::reconnectThreadFunc(const std::string& stationId, IEC104ConnectionInfo* info, int maxRetries) {
     int retryCount = 0;
-    const int maxRetries = 10;
     const int baseDelayMs = 1000;
 
-    while (info->shouldReconnect && retryCount < maxRetries) {
-        // Exponential backoff
+    // maxRetries == -1 means unlimited retries (for established connections that dropped)
+    while (info->shouldReconnect && (maxRetries < 0 || retryCount < maxRetries)) {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s (capped)
         int delayMs = baseDelayMs * (1 << std::min(retryCount, 5));
         std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 
         if (!info->shouldReconnect) break;
 
+        // Notify frontend of reconnecting status
+        {
+            std::lock_guard<std::mutex> lock(connectionsMutex_);
+            info->status = ConnectionStatus::CONNECTING;
+        }
+        if (connectionCallback_) {
+            connectionCallback_(stationId, ConnectionStatus::CONNECTING,
+                "Reconnecting (attempt " + std::to_string(retryCount + 1) + ")");
+        }
+
         std::cout << "[IEC104] Reconnecting to " << stationId << " (attempt " << (retryCount + 1) << ")..." << std::endl;
 
-        // Destroy old connection
-        if (info->connection) {
-            CS104_Connection_destroy(info->connection);
+        // Destroy old connection outside lock
+        CS104_Connection oldConn = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(connectionsMutex_);
+            oldConn = info->connection;
             info->connection = nullptr;
+        }
+        if (oldConn) {
+            CS104_Connection_destroy(oldConn);
         }
 
         // Create new connection
-        info->connection = createConnection(*info);
-        if (!info->connection) {
+        CS104_Connection newConn = createConnection(*info);
+        if (!newConn) {
             retryCount++;
             continue;
         }
 
         // Set handlers - pass info pointer to get station_id in callbacks
-        CS104_Connection_setASDUReceivedHandler(info->connection, asduReceivedHandler, info);
-        CS104_Connection_setConnectionHandler(info->connection, connectionHandler, info);
+        CS104_Connection_setASDUReceivedHandler(newConn, asduReceivedHandler, info);
+        CS104_Connection_setConnectionHandler(newConn, connectionHandler, info);
+        CS104_Connection_setRawMessageHandler(newConn, rawMessageHandler, info);
 
         // Try to connect
-        if (CS104_Connection_connect(info->connection)) {
-            CS104_Connection_sendStartDT(info->connection);
-            info->status = ConnectionStatus::CONNECTED;
+        if (CS104_Connection_connect(newConn)) {
+            CS104_Connection_sendStartDT(newConn);
+            {
+                std::lock_guard<std::mutex> lock(connectionsMutex_);
+                info->connection = newConn;
+                info->status = ConnectionStatus::CONNECTED;
+            }
 
             std::cout << "[IEC104] Reconnected: " << stationId << std::endl;
 
@@ -321,11 +351,21 @@ void IEC104ConnectionManager::reconnectThreadFunc(const std::string& stationId, 
             return;
         }
 
+        // Connect failed, destroy the new connection
+        CS104_Connection_destroy(newConn);
         retryCount++;
     }
 
+    if (!info->shouldReconnect) {
+        std::cout << "[IEC104] Reconnect stopped by user: " << stationId << std::endl;
+        return;
+    }
+
     std::cerr << "[IEC104] Max retries reached: " << stationId << std::endl;
-    info->status = ConnectionStatus::CONN_ERROR;
+    {
+        std::lock_guard<std::mutex> lock(connectionsMutex_);
+        info->status = ConnectionStatus::CONN_ERROR;
+    }
 
     if (connectionCallback_) {
         connectionCallback_(stationId, ConnectionStatus::CONN_ERROR, "Max retries reached");
@@ -616,29 +656,56 @@ void IEC104ConnectionManager::connectionHandler(void* param, CS104_Connection co
     if (!self) return;
 
     switch (event) {
-        case CS104_CONNECTION_OPENED:
+        case CS104_CONNECTION_OPENED: {
             std::cout << "[IEC104] Connection opened: " << stationId << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(self->connectionsMutex_);
+                info->status = ConnectionStatus::CONNECTED;
+            }
             if (self->connectionCallback_) {
                 self->connectionCallback_(stationId, ConnectionStatus::CONNECTED, "Connected");
             }
             break;
+        }
 
-        case CS104_CONNECTION_CLOSED:
+        case CS104_CONNECTION_CLOSED: {
             std::cout << "[IEC104] Connection closed: " << stationId << std::endl;
-            // 清理连接状态
-            info->connection = nullptr;
-            info->status = ConnectionStatus::DISCONNECTED;
+            CS104_Connection oldConn = nullptr;
+            bool shouldReconnect = false;
+            {
+                std::lock_guard<std::mutex> lock(self->connectionsMutex_);
+                oldConn = info->connection;
+                info->connection = nullptr;
+                info->status = ConnectionStatus::DISCONNECTED;
+                shouldReconnect = info->shouldReconnect.load();
+            }
+            // Callback outside lock to avoid nested deadlock
             if (self->connectionCallback_) {
                 self->connectionCallback_(stationId, ConnectionStatus::DISCONNECTED, "Disconnected");
             }
+            // Deferred destroy + reconnect in a separate thread
+            std::thread([self, stationId, info, oldConn, shouldReconnect]() {
+                if (oldConn) {
+                    CS104_Connection_destroy(oldConn);
+                }
+                if (shouldReconnect) {
+                    self->reconnectThreadFunc(stationId, info, -1);
+                }
+            }).detach();
             break;
+        }
 
-        case CS104_CONNECTION_FAILED:
+        case CS104_CONNECTION_FAILED: {
             std::cout << "[IEC104] Connection failed: " << stationId << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(self->connectionsMutex_);
+                info->status = ConnectionStatus::CONN_ERROR;
+            }
             if (self->connectionCallback_) {
                 self->connectionCallback_(stationId, ConnectionStatus::CONN_ERROR, "Connection failed");
             }
             break;
+        }
 
         default:
             break;
