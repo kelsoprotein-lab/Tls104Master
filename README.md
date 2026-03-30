@@ -127,11 +127,12 @@ cmake --build . --config Release
 
 预编译的可执行文件可从 [GitHub Releases](../../releases/latest) 页面下载：
 
-| 平台 | 文件 |
-|------|------|
-| Windows (x64) | `tls104_master_win-windows.zip` |
-| macOS | `tls104_master_win-macos.tar.gz` |
-| Linux (x64) | `tls104_master_win-linux.tar.gz` |
+| 平台 | 架构 | 文件 |
+|------|------|------|
+| Windows | x64 | `tls104_master_win-windows-x64.zip` |
+| macOS | Universal (arm64 + x86_64) | `tls104_master_win-macos-universal.tar.gz` |
+| Linux | amd64 | `tls104_master_win-linux-amd64.tar.gz` |
+| Linux | arm64 | `tls104_master_win-linux-arm64.tar.gz` |
 
 下载后解压即可运行，无需安装。
 
