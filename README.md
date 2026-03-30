@@ -1,6 +1,19 @@
 # Tls104Master-win
 
-跨平台 IEC 60870-5-104 主站，基于 C++ + WebView2 实现。支持 Windows、macOS 和 Linux。
+跨平台 IEC 60870-5-104 主站，基于 C++17 实现。支持 Windows、macOS 和 Linux。
+
+## 下载
+
+预编译的可执行文件可从 [GitHub Releases](../../releases/latest) 页面下载：
+
+| 平台 | 架构 | 文件 |
+|------|------|------|
+| Windows | x64 | `tls104_master_win-<version>-windows-x64.zip` |
+| macOS | Universal (arm64 + x86_64) | `tls104_master_win-<version>-macos-universal.tar.gz` |
+| Linux | amd64 | `tls104_master_win-<version>-linux-amd64.tar.gz` |
+| Linux | arm64 | `tls104_master_win-<version>-linux-arm64.tar.gz` |
+
+其中 `<version>` 为版本号，如 `v1.0.13`。下载后解压即可运行，无需安装。
 
 ## 功能特性
 
@@ -13,31 +26,28 @@
 - **时钟同步** - 发送时钟同步命令
 - **计数器读取** - 读取计数器/累计量数据
 - **多 ASDU 类型** - 支持 Step Position、Bitstring、Counter、Protection Event
-- **现代 UI** - 基于 Vue.js + Element Plus（可通过浏览器或 WebView 窗口访问）
+- **现代 UI** - 基于 Vue.js + Element Plus（可通过浏览器或原生窗口访问）
 
 ## 系统要求
 
 ### Windows
-- Windows 10/11 (需要 WebView2 运行时)
+- Windows 10/11
 - CMake >= 3.14
 - C++17 编译器 (MSVC, MinGW, 或 Clang)
-- lib60870 依赖
-- mbedTLS (可选，用于 TLS 支持)
+- 可选原生窗口: WebView2 运行时
 
 ### macOS
 - macOS 10.14+
 - CMake >= 3.14
 - C++17 编译器 (Clang)
-- lib60870 依赖
-- mbedTLS (可选，用于 TLS 支持)
 
 ### Linux
 - Ubuntu 20.04+ / Debian 11+ / Fedora 35+ 或其他主流 Linux 发行版
 - CMake >= 3.14
 - C++17 编译器 (GCC >= 7 或 Clang >= 5)
-- lib60870 依赖（自动下载）
-- mbedTLS（自动下载，用于 TLS 支持）
-- 可选 GUI: libgtk-3-dev, libwebkit2gtk-4.0-dev
+- 可选原生窗口: libgtk-3-dev, libwebkit2gtk-4.0-dev
+
+> lib60870 和 mbedTLS 依赖在构建时自动下载，无需手动安装。
 
 ## 构建步骤
 
@@ -64,7 +74,7 @@ brew install cmake
 sudo apt-get update
 sudo apt-get install -y cmake build-essential
 
-# 可选：安装 GUI 依赖
+# 可选：安装原生窗口依赖
 # sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 ```
 
@@ -73,7 +83,7 @@ sudo apt-get install -y cmake build-essential
 # 安装编译工具和 CMake
 sudo dnf install cmake gcc-c++ make
 
-# 可选：安装 GUI 依赖
+# 可选：安装原生窗口依赖
 # sudo dnf install gtk3-devel webkit2gtk4.0-devel
 ```
 
@@ -122,19 +132,6 @@ cmake --build . --config Release
 ```bash
 ./tls104_master_win --gui
 ```
-
-## 下载
-
-预编译的可执行文件可从 [GitHub Releases](../../releases/latest) 页面下载：
-
-| 平台 | 架构 | 文件 |
-|------|------|------|
-| Windows | x64 | `tls104_master_win-<version>-windows-x64.zip` |
-| macOS | Universal (arm64 + x86_64) | `tls104_master_win-<version>-macos-universal.tar.gz` |
-| Linux | amd64 | `tls104_master_win-<version>-linux-amd64.tar.gz` |
-| Linux | arm64 | `tls104_master_win-<version>-linux-arm64.tar.gz` |
-
-其中 `<version>` 为版本号，如 `v1.0.13`。下载后解压即可运行，无需安装。
 
 ## 使用方法
 
@@ -207,7 +204,7 @@ Tls104Master-win/
 
 - **后端**: C++17, lib60870, mbedTLS
 - **前端**: Vue 3, Element Plus
-- **桌面**: WebView2 (Windows) / WebKit (macOS Linux)
+- **桌面**: WebView2 (Windows) / WebKit (macOS, Linux)
 - **构建**: CMake
 
 ## 许可证
