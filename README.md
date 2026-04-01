@@ -1,6 +1,20 @@
 # Tls104Master-win
 
+> **⚠️ 本项目已停止维护 | This project is no longer maintained**
+>
+> 本项目已迁移至新仓库，请访问：
+> This project has moved to a new repository, please visit:
+>
+> **👉 [IEC60870-5-104-Simulator](https://github.com/kelsoprotein-lab/IEC60870-5-104-Simulator)**
+>
+> 新仓库将持续更新和维护，欢迎 Star 和 PR。
+> The new repository is actively maintained. Stars and PRs are welcome.
+
+---
+
 跨平台 IEC 60870-5-104 主站，基于 C++17 实现。支持 Windows、macOS 和 Linux。
+
+Cross-platform IEC 60870-5-104 master station built with C++17. Supports Windows, macOS and Linux.
 
 ## 下载
 
